@@ -1,4 +1,4 @@
-// Package find allows to search for files/folders paths with geven options.
+// Package find allows to search for files/folders paths with given options.
 package find
 
 import (
