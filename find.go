@@ -191,6 +191,8 @@ func (t *Template) Match(str string) bool {
 		if t.not {
 			match = !match
 		}
+	} else if t.not {
+		match = true
 	}
 
 	if t.or != nil && !match {
