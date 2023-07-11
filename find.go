@@ -101,7 +101,12 @@ func Find[T Templater](
 }
 
 // findTemplate searches specific Template in where with given options.
-func find(ctx context.Context, p string, ts Templates, opt *options) ([]string, error) {
+func find(
+	ctx context.Context,
+	p string,
+	ts Templates,
+	opt *options,
+) ([]string, error) {
 	p, err := evalSymlink(p)
 	if err != nil {
 		return nil, err
@@ -119,9 +124,10 @@ func find(ctx context.Context, p string, ts Templates, opt *options) ([]string, 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
-			if opt.matchFunc(ts, f.Name()) && (opt.fType == Both ||
-				(opt.fType == File && !f.IsDir()) ||
-				(opt.fType == Folder && f.IsDir())) {
+			if (opt.matchFunc(ts, f.Name()) ||
+				opt.matchFunc(ts, path.Join(p, f.Name()))) &&
+				(opt.fType == Both || (opt.fType == File && !f.IsDir()) ||
+					(opt.fType == Folder && f.IsDir())) {
 				if opt.name {
 					folders = append(folders, f.Name())
 				} else {
@@ -145,7 +151,8 @@ func find(ctx context.Context, p string, ts Templates, opt *options) ([]string, 
 	return folders, nil
 }
 
-// evalSymlink returns the path name after the evaluation of any symbolic links.
+// evalSymlink returns the path name after the evaluation
+// of any symbolic links.
 // Check [filepath.EvalSymlinks] for details.
 func evalSymlink(p string) (string, error) {
 	info, err := os.Lstat(p)
@@ -173,11 +180,18 @@ type Template struct {
 // Match checks if basename of the given path matches the template.
 func (t *Template) Match(str string) bool {
 	var match bool
+
 	if strings.Contains(str, t.str) {
 		match = true
 		sub := strings.Split(str, t.str)
-		left := sub[0] == "" || strings.HasSuffix(sub[0], pathSeparator)
-		right := sub[1] == "" || strings.HasPrefix(sub[1], pathSeparator)
+
+		left := len(sub) == 1 ||
+			sub[0] == "" ||
+			strings.HasSuffix(sub[0], pathSeparator)
+
+		right := len(sub) == 1 ||
+			sub[1] == "" ||
+			strings.HasPrefix(sub[1], pathSeparator)
 
 		switch {
 		case t.strictLeft && t.strictRight:
