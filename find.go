@@ -77,15 +77,6 @@ func Find[T Templater](
 		fn(opt)
 	}
 
-	if strings.HasPrefix(where, ".") {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-
-		where = strings.ReplaceAll(where, ".", cwd)
-	}
-
 	var ts Templates
 
 	switch any(t).(type) {
@@ -107,7 +98,7 @@ func find(
 	ts Templates,
 	opt *options,
 ) ([]string, error) {
-	p, err := evalSymlink(p)
+	p, err := resolvePath(p)
 	if err != nil {
 		return nil, err
 	}
@@ -151,20 +142,20 @@ func find(
 	return folders, nil
 }
 
-// evalSymlink returns the path name after the evaluation
-// of any symbolic links.
-// Check [filepath.EvalSymlinks] for details.
-func evalSymlink(p string) (string, error) {
+// resolvePath resolves symlinks and relative paths.
+func resolvePath(p string) (string, error) {
 	info, err := os.Lstat(p)
 	if err != nil {
 		return "", fmt.Errorf("cannot get %s info: %w", p, err)
 	}
 
 	if info.Mode()&os.ModeSymlink == os.ModeSymlink {
-		return filepath.EvalSymlinks(p)
+		if p, err = filepath.EvalSymlinks(p); err != nil {
+			return "", err
+		}
 	}
 
-	return p, nil
+	return filepath.Abs(p)
 }
 
 // Template is a parsed version of each Find filter.
