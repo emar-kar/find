@@ -39,10 +39,27 @@ for _, r := range results {
 
 Find supports several options for search customization:
 
-* `SearchFor` - allows to define what type should be the results: files, folders or both;
-* `SearchRecursively` - activates recursive search;
-* `SearchName` - if true, result will contain only names of the found elements, not their paths;
-* `SearchStrict` - since Find supports passing several templates during search, by default path will be returned if it matchs any of the given template. This option switch this behavior to match all the templates.
+* ~~`SearchFor`~~ is deprecated, use `Only` instead;
+* `Only` - defines the type of the searched object: files, folders or both;
+	```go
+	// Type of the searched object.
+	const (
+		File uint8 = iota
+		Folder
+		Both
+	)
+	```
+* ~~`SearchRecursively`~~ is deprecated, use `Recursively` instead;
+* `Recursively` - activates recursive search, disabled by default;
+* ~~`SearchName`~~ is deprecated, use `Name` instead;
+* `Name` - result will containt only names of the searched objects, not paths;
+* ~~`SearchStrict`~~ is deprecated, use `Strict` instead;
+* `Strict` - since Find supports passing several templates during search, by default path will be returned if it matchs any of the given templates. This option switch this behavior to match all of the templates;
+* `MatchTree` - matches the whole path instead of the object name;
+* `RelativePaths` - does not resolve paths in output;
+* `WithErrorsSkip` - skips errors during execution, returns **nil** in result, only if the root where was resolved;
+* `WithErrosLog` - logs errors during execution;
+* `WithOutput` - prints found paths during the process, before return.
 
 ```go
 // defaultOptions default Find options.

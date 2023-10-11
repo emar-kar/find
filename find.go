@@ -6,22 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 )
 
 var ErrTemplateType = errors.New("cannot define type of the template")
 
-// pathSeparator string representation of the current system path separator.
+// String representation of the current system path separator.
 var pathSeparator = string(os.PathSeparator)
 
 // Templater defines type constraint for generic Find function.
 type Templater interface {
-	string | []string
+	~string | ~[]string
 }
 
-// Allows to define searched object.
+// Type of the searched object.
 const (
 	File uint8 = iota
 	Folder
@@ -31,9 +30,16 @@ const (
 // options allows to configure Find behavior.
 type options struct {
 	matchFunc func(Templates, string) bool
+	orig      string
+	resOrig   string
 	fType     uint8
 	rec       bool
 	name      bool
+	relative  bool
+	tree      bool
+	skip      bool
+	log       bool
+	output    bool
 }
 
 // defaultOptions default Find options.
@@ -41,38 +47,85 @@ func defaultOptions() *options {
 	return &options{
 		matchFunc: MatchAny,
 		fType:     Both,
-		rec:       false,
-		name:      false,
 	}
 }
 
 type optFunc func(*options)
 
-// SearchFor defines if result should contains files, folders or both.
-func SearchFor(t uint8) optFunc {
+// Deprecated: use [Only] instead.
+func SearchFor(t uint8) optFunc { return Only(t) }
+
+// Only defines if result should contains files, folders or both.
+func Only(t uint8) optFunc {
 	return func(o *options) {
 		o.fType = t
 	}
 }
 
-// SearchRecursively defines recursive search.
-func SearchRecursively(o *options) { o.rec = true }
+// Deprecated: use [Recursively] instead.
+func SearchRecursively(o *options) { Recursively(o) }
 
-// SearchName defines if only result names should be found.
-func SearchName(o *options) { o.name = true }
+// Recursively defines recursive search.
+func Recursively(o *options) { o.rec = true }
 
-// SearchStrict requires all templates to match searched path.
-func SearchStrict(o *options) { o.matchFunc = MatchAll }
+// Deprecated: use [Name] instead.
+func SearchName(o *options) { Name(o) }
+
+// Name defines if only names of files/folders should be
+// in the output.
+func Name(o *options) { o.name = true }
+
+// Deprecated: use [Strict] instead.
+func SearchStrict(o *options) { Strict(o) }
+
+// Strict requires all templates to match searched path.
+func Strict(o *options) { o.matchFunc = MatchAll }
+
+// MatchTree defines if all path should match the template or only a name.
+func MatchTree(o *options) { o.tree = true }
+
+// RelativePaths does not resolve paths in the output.
+//
+// Note: does not work with [Name] option.
+func RelativePaths(o *options) { o.relative = true }
+
+// WithErrorsSkip skips errors during find execution.
+//
+// Note: if the flag was set, [Find] will return nil error,
+// only if the base path was resolved.
+func WithErrorsSkip(o *options) { o.skip = true }
+
+// WithErrosLog logs errors during find execution,
+// should be used with [WithErrorsSkip], for clear output.
+func WithErrosLog(o *options) { o.log = true }
+
+// WithOutput prints found paths as soon as they match.
+// Follows all the previous path related options,
+// such as names and relative paths.
+func WithOutput(o *options) { o.output = true }
 
 // Templates defines slice of templates.
 type Templates []*Template
 
-// Find parses given string or slice of strings into template and
-// searches for matching paths with given options.
+// Find parses given string or slice of strings into templates and
+// searches for matching paths in where with given options.
 func Find[T Templater](
 	ctx context.Context, where string, t T, opts ...optFunc,
 ) ([]string, error) {
+	// Primary path resolution, even if `skip` flag was set,
+	// this error is critical and should not be omitted.
+	resPath, err := resolvePath(where)
+	if err != nil {
+		return nil, err
+	}
+
 	opt := defaultOptions()
+
+	// Pre-save location file and its resolved path, for further
+	// usage if relative paths will be needed.
+	opt.orig = where
+	opt.resOrig = resPath
+
 	for _, fn := range opts {
 		fn(opt)
 	}
@@ -88,25 +141,40 @@ func Find[T Templater](
 		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
 	}
 
-	return find(ctx, where, ts, opt)
+	return find(ctx, resPath, ts, opt)
 }
 
-// findTemplate searches specific Template in where with given options.
 func find(
 	ctx context.Context,
-	p string,
+	where string,
 	ts Templates,
 	opt *options,
 ) ([]string, error) {
-	p, err := resolvePath(p)
+	resPath, err := resolvePath(where)
 	if err != nil {
+		if opt.skip {
+			if opt.log {
+				fmt.Println("error:", err)
+			}
+
+			return nil, nil
+		}
+
 		return nil, err
 	}
 
 	folders := make([]string, 0)
 
-	data, err := os.ReadDir(p)
+	data, err := os.ReadDir(resPath)
 	if err != nil {
+		if opt.skip {
+			if opt.log {
+				fmt.Println("error:", err)
+			}
+
+			return nil, nil
+		}
+
 		return nil, err
 	}
 
@@ -115,21 +183,33 @@ func find(
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
+			p := filepath.Join(resPath, f.Name())
+
+			var found string
+
 			if (opt.matchFunc(ts, f.Name()) ||
-				opt.matchFunc(ts, path.Join(p, f.Name()))) &&
-				(opt.fType == Both || (opt.fType == File && !f.IsDir()) ||
+				(opt.tree && opt.matchFunc(ts, p))) &&
+				(opt.fType == Both ||
+					(opt.fType == File && !f.IsDir()) ||
 					(opt.fType == Folder && f.IsDir())) {
-				if opt.name {
-					folders = append(folders, f.Name())
-				} else {
-					folders = append(folders, path.Join(p, f.Name()))
+				switch {
+				case opt.name:
+					found = f.Name()
+				case opt.relative:
+					found = strings.ReplaceAll(p, opt.resOrig, opt.orig)
+				default:
+					found = p
 				}
+
+				if opt.output {
+					fmt.Println(found)
+				}
+
+				folders = append(folders, found)
 			}
 
 			if opt.rec && f.IsDir() {
-				recData, err := find(
-					ctx, path.Join(p, f.Name()), ts, opt,
-				)
+				recData, err := find(ctx, p, ts, opt)
 				if err != nil {
 					return nil, err
 				}
@@ -146,7 +226,7 @@ func find(
 func resolvePath(p string) (string, error) {
 	info, err := os.Lstat(p)
 	if err != nil {
-		return "", fmt.Errorf("cannot get %s info: %w", p, err)
+		return "", err
 	}
 
 	if info.Mode()&os.ModeSymlink == os.ModeSymlink {
@@ -162,19 +242,19 @@ func resolvePath(p string) (string, error) {
 type Template struct {
 	and         *Template
 	or          *Template
-	str         string
+	base        string
 	not         bool
 	strictLeft  bool
 	strictRight bool
 }
 
-// Match checks if basename of the given path matches the template.
+// Match checks if given str matches the [Template].
 func (t *Template) Match(str string) bool {
 	var match bool
 
-	if strings.Contains(str, t.str) {
+	if strings.Contains(str, t.base) {
 		match = true
-		sub := strings.Split(str, t.str)
+		sub := strings.Split(str, t.base)
 
 		left := len(sub) == 1 ||
 			sub[0] == "" ||
@@ -230,8 +310,8 @@ func (t *Template) Match(str string) bool {
 //	!str*    - means that searched path should not start with str
 //	!*str*   - means that searched path should not contain str
 //
-// Option '&' defines nested paths e.g., 'str&str1' - Find will search
-// for 'str' first and if it's found 'str1' inside it.
+// Option '&' defines nested paths e.g., '*str*&*str1*' - Find will search
+// for 'str' first and if it was found 'str1' inside it.
 //
 // Options '|' and '&' can contain as many elements as you need.
 func NewTemplate(str string) *Template {
@@ -261,10 +341,10 @@ func NewTemplate(str string) *Template {
 	return t
 }
 
-// parse parses basic fields of the Template.
+// parse parses string into the Template.
 func parse(str string) *Template {
 	t := &Template{}
-	t.str = strings.TrimFunc(
+	t.base = strings.TrimFunc(
 		str, func(r rune) bool {
 			return r == '!' || r == '*'
 		},
@@ -289,7 +369,7 @@ func NewTemplates(t []string) Templates {
 	return ts
 }
 
-// Any returns true if any of the templates match the given string.
+// MatchAny returns true if any of the given templates match the string.
 func MatchAny(ts Templates, str string) bool {
 	for _, t := range ts {
 		if t.Match(str) {
@@ -300,7 +380,7 @@ func MatchAny(ts Templates, str string) bool {
 	return false
 }
 
-// All returns true if all of the templates match the given string.
+// MatchAll returns true if all of the given templates match the string.
 func MatchAll(ts Templates, str string) bool {
 	for _, t := range ts {
 		if !t.Match(str) {
