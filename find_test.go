@@ -46,8 +46,8 @@ func ExampleFind_withOptions() {
 		ctx,
 		where,
 		"*template*",
-		SearchFor(Folder),
-		SearchRecursively,
+		Only(Folder),
+		Recursively,
 	)
 	if err != nil {
 		log.Println(err)
