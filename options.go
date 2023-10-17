@@ -9,6 +9,7 @@ type (
 // opts allows to configure Find behavior.
 type opts struct {
 	matchFunc matchFunc
+	max       int
 	orig      string
 	resOrig   string
 	fType     uint8
@@ -26,6 +27,7 @@ func defaultOptions() *opts {
 	return &opts{
 		matchFunc: MatchAny,
 		fType:     Both,
+		max:       -1,
 	}
 }
 
@@ -84,6 +86,14 @@ func WithErrosLog(o *opts) { o.log = true }
 // Follows all the previous path related opts,
 // such as names and relative paths.
 func WithOutput(o *opts) { o.output = true }
+
+// Max set maximum ammount of searched objects. [Find] will stop as
+// soon as reach the limitation.
+func Max(i int) optFunc {
+	return func(o *opts) {
+		o.max = i
+	}
+}
 
 // WithMatchFunc allows to set custom match function
 // for multiple templates.

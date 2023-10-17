@@ -126,6 +126,10 @@ func find(
 				}
 
 				res = append(res, found)
+
+				if opt.max != -1 && len(res) >= opt.max {
+					return res, nil
+				}
 			}
 
 			if opt.rec && f.IsDir() {
@@ -134,7 +138,14 @@ func find(
 					return nil, err
 				}
 
-				res = append(res, recData...)
+				if opt.max != -1 && len(res)+len(recData) >= opt.max {
+					res = append(res, recData[:opt.max-len(res)]...)
+
+					return res, nil
+				} else {
+					res = append(res, recData...)
+				}
+
 			}
 		}
 	}
