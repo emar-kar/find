@@ -10,13 +10,6 @@ import (
 	"strings"
 )
 
-// Type of the searched object.
-const (
-	File uint8 = iota
-	Folder
-	Both
-)
-
 var ErrTemplateType = errors.New("cannot define type of the template")
 
 // Templater defines type constraint for generic Find function.
@@ -54,9 +47,15 @@ func Find[T Templater](
 
 	switch any(t).(type) {
 	case string:
-		ts = Templates{NewTemplate(any(t).(string))}
+		ts = Templates{NewTemplate(opt.caseFunc(any(t).(string)))}
 	case []string:
-		ts = NewTemplates(any(t).([]string))
+		sl := make([]string, 0, len(any(t).([]string)))
+
+		for _, str := range any(t).([]string) {
+			sl = append(sl, opt.caseFunc(str))
+		}
+
+		ts = NewTemplates(sl)
 	default:
 		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
 	}
@@ -68,7 +67,7 @@ func find(
 	ctx context.Context,
 	where string,
 	ts Templates,
-	opt *opts,
+	opt *options,
 ) ([]string, error) {
 	resPath, err := resolvePath(where)
 	if err != nil {
@@ -110,8 +109,8 @@ func find(
 			if (opt.fType == Both ||
 				(opt.fType == File && !f.IsDir()) ||
 				(opt.fType == Folder && f.IsDir())) &&
-				(opt.matchFunc(ts, f.Name()) ||
-					(opt.tree && opt.matchFunc(ts, p))) {
+				(opt.full && opt.matchFunc(ts, opt.caseFunc(p))) ||
+				(!opt.full && opt.matchFunc(ts, opt.caseFunc(f.Name()))) {
 				switch {
 				case opt.name:
 					found = f.Name()
@@ -145,7 +144,6 @@ func find(
 				} else {
 					res = append(res, recData...)
 				}
-
 			}
 		}
 	}

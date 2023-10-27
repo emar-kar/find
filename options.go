@@ -1,14 +1,42 @@
 package find
 
-type (
-	optFunc   func(*opts)
-	matchFunc func(Templates, string) bool
-	options   []optFunc
+import "strings"
+
+// Type of the searched object.
+const (
+	File uint8 = iota
+	Folder
+	Both
 )
 
-// opts allows to configure Find behavior.
-type opts struct {
+var sensitive = func(s string) string { return s }
+
+type (
+	optFunc   func(*options)
+	matchFunc func(Templates, string) bool
+	caseFunc  func(string) string
+)
+
+type Options []optFunc
+
+// NewDefaultOptions returns [Options] to create custom sets.
+//
+// Can be used like:
+//
+//	 opts := find.NewOptions()
+//	 opts = append(opts, find.Only(find.File), find.Recursively)
+//	 res, err := find.Find(
+//		 	context.TODO(),
+//		 	"path/to/where",
+//		 	"template",
+//		 	opts...,
+//	 )
+func NewOptions() Options { return make(Options, 0) }
+
+// options allows to configure Find behavior.
+type options struct {
 	matchFunc matchFunc
+	caseFunc  caseFunc
 	max       int
 	orig      string
 	resOrig   string
@@ -16,91 +44,85 @@ type opts struct {
 	rec       bool
 	name      bool
 	relative  bool
-	tree      bool
+	full      bool
 	skip      bool
 	log       bool
 	output    bool
 }
 
-// defaultOptions default Find opts.
-func defaultOptions() *opts {
-	return &opts{
+// defaultOptions default [Find] options.
+func defaultOptions() *options {
+	return &options{
 		matchFunc: MatchAny,
+		caseFunc:  sensitive,
 		fType:     Both,
 		max:       -1,
 	}
 }
-
-// NewOptions creates an empty slice of [optFunc]s to
-// create custom options sets.
-func NewOptions() options { return make(options, 0) }
 
 // Deprecated: use [Only] instead.
 func SearchFor(t uint8) optFunc { return Only(t) }
 
 // Only defines if result should contains files, folders or both.
 func Only(t uint8) optFunc {
-	return func(o *opts) {
+	return func(o *options) {
 		o.fType = t
 	}
 }
 
 // Deprecated: use [Recursively] instead.
-func SearchRecursively(o *opts) { Recursively(o) }
+func SearchRecursively(o *options) { Recursively(o) }
 
 // Recursively defines recursive search.
-func Recursively(o *opts) { o.rec = true }
+func Recursively(o *options) { o.rec = true }
 
 // Deprecated: use [Name] instead.
-func SearchName(o *opts) { Name(o) }
+func SearchName(o *options) { Name(o) }
 
 // Name defines if only names of files/folders should be
 // in the output.
-func Name(o *opts) { o.name = true }
+func Name(o *options) { o.name = true }
 
 // Deprecated: use [Strict] instead.
-func SearchStrict(o *opts) { Strict(o) }
+func SearchStrict(o *options) { Strict(o) }
 
 // Strict requires all templates to match searched path.
-func Strict(o *opts) { o.matchFunc = MatchAll }
+func Strict(o *options) { o.matchFunc = MatchAll }
 
-// MatchTree defines if all path should match the template or only a name.
-func MatchTree(o *opts) { o.tree = true }
+// MatchFullPath matches full path not just the name.
+func MatchFullPath(o *options) { o.full = true }
 
 // RelativePaths does not resolve paths in the output.
 //
 // Note: does not work with [Name] option.
-func RelativePaths(o *opts) { o.relative = true }
+func RelativePaths(o *options) { o.relative = true }
 
 // WithErrorsSkip skips errors during find execution.
 //
 // Note: if the flag was set, [Find] will return nil error,
 // only if the base path was resolved.
-func WithErrorsSkip(o *opts) { o.skip = true }
+func WithErrorsSkip(o *options) { o.skip = true }
 
 // WithErrosLog logs errors during find execution,
 // should be used with [WithErrorsSkip], for clear output.
-func WithErrosLog(o *opts) { o.log = true }
+func WithErrosLog(o *options) { o.log = true }
 
 // WithOutput prints found paths as soon as they match.
-// Follows all the previous path related opts,
+// Follows all the previous path related options,
 // such as names and relative paths.
-func WithOutput(o *opts) { o.output = true }
+func WithOutput(o *options) { o.output = true }
 
 // Max set maximum ammount of searched objects. [Find] will stop as
 // soon as reach the limitation.
 func Max(i int) optFunc {
-	return func(o *opts) {
+	return func(o *options) {
 		o.max = i
 	}
 }
 
-// WithMatchFunc allows to set custom match function
-// for multiple templates.
-func WithMatchFunc(fn matchFunc) optFunc {
-	return func(o *opts) {
-		o.matchFunc = fn
-	}
+// Insensitive sets case insensitive search.
+func Insensitive(o *options) {
+	o.caseFunc = strings.ToLower
 }
 
 // MatchAny returns true if any of the given templates match the string.
