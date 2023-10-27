@@ -86,7 +86,9 @@ func parse(str string) *Template {
 func (t *Template) Match(str string) bool {
 	var match bool
 
-	if strings.Contains(str, t.base) {
+	if t.base == "" {
+		match = true
+	} else if strings.Contains(str, t.base) {
 		match = true
 		sub := strings.Split(str, t.base)
 
