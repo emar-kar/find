@@ -106,11 +106,13 @@ func find(
 
 			var found string
 
+			// Check if current path matches searched object and if it does,
+			// use the match func to process it with the match function.
 			if (opt.fType == Both ||
 				(opt.fType == File && !f.IsDir()) ||
 				(opt.fType == Folder && f.IsDir())) &&
-				(opt.full && opt.matchFunc(ts, opt.caseFunc(p))) ||
-				(!opt.full && opt.matchFunc(ts, opt.caseFunc(f.Name()))) {
+				((opt.full && opt.matchFunc(ts, opt.caseFunc(p))) ||
+					(!opt.full && opt.matchFunc(ts, opt.caseFunc(f.Name())))) {
 				switch {
 				case opt.name:
 					found = f.Name()
