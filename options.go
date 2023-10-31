@@ -103,9 +103,9 @@ func RelativePaths(o *options) { o.relative = true }
 // only if the base path was resolved.
 func WithErrorsSkip(o *options) { o.skip = true }
 
-// WithErrosLog logs errors during find execution,
+// WithErrorsLog logs errors during find execution,
 // should be used with [WithErrorsSkip], for clear output.
-func WithErrosLog(o *options) { o.log = true }
+func WithErrorsLog(o *options) { o.log = true }
 
 // WithOutput prints found paths as soon as they match.
 // Follows all the previous path related options,
