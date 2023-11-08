@@ -1,6 +1,11 @@
 package find
 
-import "strings"
+import (
+	"fmt"
+	"io"
+	"os"
+	"strings"
+)
 
 // Type of the searched object.
 const (
@@ -17,26 +22,11 @@ type (
 	caseFunc  func(string) string
 )
 
-type Options []optFunc
-
-// NewDefaultOptions returns [Options] to create custom sets.
-//
-// Can be used like:
-//
-//	 opts := find.NewOptions()
-//	 opts = append(opts, find.Only(find.File), find.Recursively)
-//	 res, err := find.Find(
-//		 	context.TODO(),
-//		 	"path/to/where",
-//		 	"template",
-//		 	opts...,
-//	 )
-func NewOptions() Options { return make(Options, 0) }
-
 // options allows to configure Find behavior.
 type options struct {
 	matchFunc matchFunc
 	caseFunc  caseFunc
+	logger    io.Writer
 	max       int
 	orig      string
 	resOrig   string
@@ -55,6 +45,7 @@ func defaultOptions() *options {
 	return &options{
 		matchFunc: MatchAny,
 		caseFunc:  sensitive,
+		logger:    os.Stdout,
 		fType:     Both,
 		max:       -1,
 	}
@@ -120,6 +111,16 @@ func Max(i int) optFunc {
 	}
 }
 
+// WithLogger allows to set custom logger for [WithErrorsLog].
+//
+// Note: write errors count as critical and will be returned
+// even if [WithErrorsSkip] was set.
+func WithLogger(l io.Writer) optFunc {
+	return func(o *options) {
+		o.logger = l
+	}
+}
+
 // Insensitive sets case insensitive search.
 func Insensitive(o *options) {
 	o.caseFunc = strings.ToLower
@@ -145,4 +146,29 @@ func MatchAll(ts Templates, str string) bool {
 	}
 
 	return true
+}
+
+func (o *options) logError(e error) error {
+	if o.skip {
+		return nil
+	}
+
+	if o.log {
+		if _, err := o.logger.Write([]byte("error: " + e.Error() + "\n")); err != nil {
+			return fmt.Errorf("%w: %s", e, err)
+		}
+	}
+
+	return nil
+}
+
+func (o *options) isSearched(isDir bool) bool {
+	switch {
+	case o.fType == Folder:
+		return isDir
+	case o.fType == File:
+		return !isDir
+	default:
+		return true
+	}
 }

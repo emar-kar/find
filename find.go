@@ -71,30 +71,18 @@ func find(
 ) ([]string, error) {
 	resPath, err := resolvePath(where)
 	if err != nil {
-		if opt.skip {
-			if opt.log {
-				fmt.Println("error:", err)
-			}
+		lErr := opt.logError(err)
 
-			return nil, nil
-		}
-
-		return nil, err
+		return nil, lErr
 	}
 
 	res := make([]string, 0)
 
 	data, err := os.ReadDir(resPath)
 	if err != nil {
-		if opt.skip {
-			if opt.log {
-				fmt.Println("error:", err)
-			}
+		lErr := opt.logError(err)
 
-			return nil, nil
-		}
-
-		return nil, err
+		return nil, lErr
 	}
 
 	for _, f := range data {
@@ -108,9 +96,7 @@ func find(
 
 			// Check if current path matches searched object and if it does,
 			// use the match func to process it with the match function.
-			if (opt.fType == Both ||
-				(opt.fType == File && !f.IsDir()) ||
-				(opt.fType == Folder && f.IsDir())) &&
+			if (opt.isSearched(f.IsDir())) &&
 				((opt.full && opt.matchFunc(ts, opt.caseFunc(p))) ||
 					(!opt.full && opt.matchFunc(ts, opt.caseFunc(f.Name())))) {
 				switch {
