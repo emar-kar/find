@@ -85,7 +85,7 @@ func parse(str string) *Template {
 	t.strictLeft = !strings.HasPrefix(str, "*")
 	str = strings.TrimPrefix(str, "*")
 	t.strictRight = !strings.HasSuffix(str, "*")
-	t.base = strings.TrimPrefix(str, "*")
+	t.base = strings.TrimSuffix(str, "*")
 
 	return t
 }
