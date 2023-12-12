@@ -67,17 +67,25 @@ func NewTemplate(str string) *Template {
 // parse parses string into the Template.
 func parse(str string) *Template {
 	t := &Template{}
-	t.base = strings.TrimFunc(
-		str, func(r rune) bool {
-			return r == '!' || r == '*'
-		},
-	)
 
 	t.not = strings.HasPrefix(str, "!")
-
 	str = strings.TrimPrefix(str, "!")
+
+	// If searched string is '*', then it will match
+	// any path it encounters. 'Not' will be ignored
+	// in this case.
+	if str == "*" {
+		t.strictLeft = false
+		t.strictRight = false
+		t.base = str
+
+		return t
+	}
+
 	t.strictLeft = !strings.HasPrefix(str, "*")
+	str = strings.TrimPrefix(str, "*")
 	t.strictRight = !strings.HasSuffix(str, "*")
+	t.base = strings.TrimPrefix(str, "*")
 
 	return t
 }
@@ -87,6 +95,8 @@ func (t *Template) Match(str string) bool {
 	var match bool
 
 	if t.base == "" {
+		match = false
+	} else if t.base == "*" {
 		match = true
 	} else if strings.Contains(str, t.base) {
 		match = true
