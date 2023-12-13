@@ -20,6 +20,9 @@ type (
 	optFunc   func(*options)
 	matchFunc func(Templates, string) bool
 	caseFunc  func(string) string
+
+	// Type to create custom slices of find options.
+	Options []optFunc
 )
 
 // options allows to configure Find behavior.
