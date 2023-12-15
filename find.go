@@ -17,8 +17,61 @@ type Templater interface {
 	~string | ~[]string
 }
 
-// Find parses given string or slice of strings into templates and
-// searches for matching paths in where with given opts.
+// FindWithIterator acts the same way as [Find] but returns channels instead.
+// String channel will return every match. Error channel returns first occured
+// error during search or if [WithErrorsSkip] was set, first critical error.
+// As soon as search is over or interrupted, both channels will be closed.
+// For example:
+//
+//	outCh, errCh := FindWithIterator(ctx, where, ts, opts...)
+//	for f := range outCh {
+//		// do something here...
+//	}
+//	if err := <-errCh {
+//		// process error...
+//	}
+func FindWithIterator[T Templater](
+	ctx context.Context,
+	where string,
+	t T,
+	opts ...optFunc,
+) (chan string, chan error) {
+	opt := defaultOptionsWithCustom(opts...)
+
+	opt.iterCh = make(chan string, opt.maxIter)
+	opt.errCh = make(chan error, 1)
+	opt.iter = true
+
+	go func() {
+		defer func() {
+			close(opt.iterCh)
+			close(opt.errCh)
+		}()
+
+		resPath, err := resolvePath(where)
+		if err != nil {
+			opt.errCh <- err
+			return
+		}
+
+		opt.orig = where
+		opt.resOrig = resPath
+
+		ts, err := newTemplates(t, opt.caseFunc)
+		if err != nil {
+			opt.errCh <- err
+			return
+		}
+
+		if _, err := find(ctx, resPath, ts, opt); err != nil {
+			opt.errCh <- err
+		}
+	}()
+
+	return opt.iterCh, opt.errCh
+}
+
+// Find searches for matches with the given templates in where.
 func Find[T Templater](
 	ctx context.Context,
 	where string,
@@ -32,32 +85,16 @@ func Find[T Templater](
 		return nil, err
 	}
 
-	opt := defaultOptions()
+	opt := defaultOptionsWithCustom(opts...)
 
 	// Pre-save location file and its resolved path, for further
 	// usage if relative paths will be needed.
 	opt.orig = where
 	opt.resOrig = resPath
 
-	for _, fn := range opts {
-		fn(opt)
-	}
-
-	var ts Templates
-
-	switch any(t).(type) {
-	case string:
-		ts = Templates{NewTemplate(opt.caseFunc(any(t).(string)))}
-	case []string:
-		sl := make([]string, 0, len(any(t).([]string)))
-
-		for _, str := range any(t).([]string) {
-			sl = append(sl, opt.caseFunc(str))
-		}
-
-		ts = NewTemplates(sl)
-	default:
-		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
+	ts, err := newTemplates(t, opt.caseFunc)
+	if err != nil {
+		return nil, err
 	}
 
 	return find(ctx, resPath, ts, opt)
@@ -69,7 +106,7 @@ func find(
 	ts Templates,
 	opt *options,
 ) ([]string, error) {
-	resPath, err := resolvePath(where)
+	resPath, data, err := readAndResolve(where)
 	if err != nil {
 		lErr := opt.logError(err)
 
@@ -78,27 +115,20 @@ func find(
 
 	res := make([]string, 0)
 
-	data, err := os.ReadDir(resPath)
-	if err != nil {
-		lErr := opt.logError(err)
-
-		return nil, lErr
-	}
-
 	for _, f := range data {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
+			if opt.max == 0 {
+				return res, nil
+			}
+
 			p := filepath.Join(resPath, f.Name())
 
 			var found string
 
-			// Check if current path matches searched object and if it does,
-			// use the match func to process it with the match function.
-			if (opt.isSearched(f.IsDir())) &&
-				((opt.full && opt.matchFunc(ts, opt.caseFunc(p))) ||
-					(!opt.full && opt.matchFunc(ts, opt.caseFunc(f.Name())))) {
+			if opt.isSearchedType(f.IsDir()) && opt.match(ts, p) {
 				switch {
 				case opt.name:
 					found = f.Name()
@@ -108,14 +138,18 @@ func find(
 					found = p
 				}
 
-				if opt.output {
-					fmt.Println(found)
+				if err := opt.printOutput(found); err != nil {
+					return nil, err
 				}
 
-				res = append(res, found)
+				if opt.iter {
+					opt.iterCh <- found
+				} else {
+					res = append(res, found)
+				}
 
-				if opt.max != -1 && len(res) >= opt.max {
-					return res, nil
+				if opt.max != -1 {
+					opt.max--
 				}
 			}
 
@@ -125,13 +159,7 @@ func find(
 					return nil, err
 				}
 
-				if opt.max != -1 && len(res)+len(recData) >= opt.max {
-					res = append(res, recData[:opt.max-len(res)]...)
-
-					return res, nil
-				} else {
-					res = append(res, recData...)
-				}
+				res = append(res, recData...)
 			}
 		}
 	}
@@ -153,4 +181,36 @@ func resolvePath(p string) (string, error) {
 	}
 
 	return filepath.Abs(p)
+}
+
+func readAndResolve(p string) (string, []os.DirEntry, error) {
+	resPath, err := resolvePath(p)
+	if err != nil {
+		return "", nil, err
+	}
+
+	data, err := os.ReadDir(resPath)
+
+	return resPath, data, err
+}
+
+func newTemplates[T Templater](t T, fn caseFunc) (Templates, error) {
+	var ts Templates
+
+	switch any(t).(type) {
+	case string:
+		ts = Templates{NewTemplate(fn(any(t).(string)))}
+	case []string:
+		sl := make([]string, 0, len(any(t).([]string)))
+
+		for _, str := range any(t).([]string) {
+			sl = append(sl, fn(str))
+		}
+
+		ts = NewTemplates(sl)
+	default:
+		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
+	}
+
+	return ts, nil
 }
