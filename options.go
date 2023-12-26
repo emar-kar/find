@@ -73,16 +73,18 @@ func defaultOptionsWithCustom(opts ...optFunc) *options {
 }
 
 func (o *options) logError(e error) error {
-	var err error
-
-	if o.log && !o.skip {
-		_, err = fmt.Fprintf(o.logger, "error: %s\n", e)
+	if o.log {
+		_, err := fmt.Fprintf(o.logger, "error: %s\n", e)
 		if err != nil {
 			return fmt.Errorf("%w: %w", e, err)
 		}
 	}
 
-	return err
+	if o.skip {
+		return nil
+	}
+
+	return e
 }
 
 func (o *options) printOutput(str string) error {
@@ -158,12 +160,15 @@ func RelativePaths(o *options) { o.relative = true }
 func WithErrorsSkip(o *options) { o.skip = true }
 
 // WithErrorsLog logs errors during find execution.
+// Defaults to [os.Stdout] and can be changed with [WithLogger].
 func WithErrorsLog(o *options) { o.log = true }
 
 // WithOutput prints results as soon as they match given [Templates].
+// Defaults to [os.Stdout] and can be changed with [WithWriter].
 func WithOutput(o *options) { o.out = true }
 
 // WithWriter allows to set custom [io.Writer] for [WithPrint].
+// Also sets [WithOutput] to true.
 //
 // Note: write errors count as critical and will be returned
 // even if [WithErrorsSkip] was set.
@@ -175,12 +180,14 @@ func WithWriter(out io.Writer) optFunc {
 }
 
 // WithLogger allows to set custom logger for [WithErrorsLog].
+// Also sets [WithErrorsLog] to true.
 //
 // Note: write errors count as critical and will be returned
 // even if [WithErrorsSkip] was set.
 func WithLogger(l io.Writer) optFunc {
 	return func(o *options) {
 		o.logger = l
+		o.log = true
 	}
 }
 
