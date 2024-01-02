@@ -96,7 +96,7 @@ func (t *Template) Match(str string) bool {
 
 	switch {
 	case t.base == "":
-		return match
+		return false
 	case t.base == "*":
 		match = true
 	case strings.Contains(str, t.base):

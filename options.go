@@ -74,8 +74,7 @@ func defaultOptionsWithCustom(opts ...optFunc) *options {
 
 func (o *options) logError(e error) error {
 	if o.log {
-		_, err := fmt.Fprintf(o.logger, "error: %s\n", e)
-		if err != nil {
+		if _, err := fmt.Fprintf(o.logger, "error: %s\n", e); err != nil {
 			return fmt.Errorf("%w: %w", e, err)
 		}
 	}
@@ -88,13 +87,13 @@ func (o *options) logError(e error) error {
 }
 
 func (o *options) printOutput(str string) error {
-	var err error
-
 	if o.out {
-		_, err = fmt.Println(o.output, str)
+		if _, err := fmt.Fprintln(o.output, str); err != nil {
+			return err
+		}
 	}
 
-	return err
+	return nil
 }
 
 func (o *options) isSearchedType(isDir bool) bool {
@@ -170,7 +169,7 @@ func WithOutput(o *options) { o.out = true }
 // WithWriter allows to set custom [io.Writer] for [WithPrint].
 // Also sets [WithOutput] to true.
 //
-// Note: write errors count as critical and will be returned
+// Note: write error counts as critical and will be returned
 // even if [WithErrorsSkip] was set.
 func WithWriter(out io.Writer) optFunc {
 	return func(o *options) {
@@ -182,7 +181,7 @@ func WithWriter(out io.Writer) optFunc {
 // WithLogger allows to set custom logger for [WithErrorsLog].
 // Also sets [WithErrorsLog] to true.
 //
-// Note: write errors count as critical and will be returned
+// Note: write error counts as critical and will be returned
 // even if [WithErrorsSkip] was set.
 func WithLogger(l io.Writer) optFunc {
 	return func(o *options) {
@@ -193,7 +192,7 @@ func WithLogger(l io.Writer) optFunc {
 
 // WithMaxIterator allows to set custom output channel buffer.
 //
-// Note: can be used only with [FindWithIterator].
+// Note: can be used only with [FindWithIterator] or has no effect.
 func WithMaxIterator(max int) optFunc {
 	return func(o *options) {
 		o.maxIter = max
