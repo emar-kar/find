@@ -94,35 +94,14 @@ func parse(str string) *Template {
 func (t *Template) Match(str string) bool {
 	var match bool
 
-	if t.base == "" {
-		match = false
-	} else if t.base == "*" {
+	switch {
+	case t.base == "":
+		return false
+	case t.base == "*":
 		match = true
-	} else if strings.Contains(str, t.base) {
-		match = true
-		sub := strings.Split(str, t.base)
-
-		left := len(sub) == 1 ||
-			sub[0] == "" ||
-			strings.HasSuffix(sub[0], pathSeparator)
-
-		right := len(sub) == 1 ||
-			sub[1] == "" ||
-			strings.HasPrefix(sub[1], pathSeparator)
-
-		switch {
-		case t.strictLeft && t.strictRight:
-			match = left && right
-		case t.strictLeft:
-			match = left
-		case t.strictRight:
-			match = right
-		}
-
-		if t.not {
-			match = !match
-		}
-	} else if t.not {
+	case strings.Contains(str, t.base):
+		match = t.match(str)
+	case t.not:
 		match = true
 	}
 
@@ -136,6 +115,34 @@ func (t *Template) Match(str string) bool {
 		}
 
 		match = t.and.Match(str)
+	}
+
+	return match
+}
+
+func (t *Template) match(str string) bool {
+	match := true
+	sub := strings.Split(str, t.base)
+
+	left := len(sub) == 1 ||
+		sub[0] == "" ||
+		strings.HasSuffix(sub[0], pathSeparator)
+
+	right := len(sub) == 1 ||
+		sub[1] == "" ||
+		strings.HasPrefix(sub[1], pathSeparator)
+
+	switch {
+	case t.strictLeft && t.strictRight:
+		match = left && right
+	case t.strictLeft:
+		match = left
+	case t.strictRight:
+		match = right
+	}
+
+	if t.not {
+		match = !match
 	}
 
 	return match

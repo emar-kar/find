@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -30,17 +31,22 @@ type options struct {
 	matchFunc matchFunc
 	caseFunc  caseFunc
 	logger    io.Writer
-	max       int
+	output    io.Writer
 	orig      string
 	resOrig   string
+	max       int
+	maxIter   int
 	fType     uint8
+	iterCh    chan string
+	errCh     chan error
 	rec       bool
 	name      bool
 	relative  bool
 	full      bool
 	skip      bool
 	log       bool
-	output    bool
+	iter      bool
+	out       bool
 }
 
 // defaultOptions default [Find] options.
@@ -49,9 +55,64 @@ func defaultOptions() *options {
 		matchFunc: MatchAny,
 		caseFunc:  sensitive,
 		logger:    os.Stdout,
-		fType:     Both,
+		output:    os.Stdout,
+		maxIter:   100,
 		max:       -1,
+		fType:     Both,
 	}
+}
+
+func defaultOptionsWithCustom(opts ...optFunc) *options {
+	opt := defaultOptions()
+
+	for _, fn := range opts {
+		fn(opt)
+	}
+
+	return opt
+}
+
+func (o *options) logError(e error) error {
+	if o.log {
+		if _, err := fmt.Fprintf(o.logger, "error: %s\n", e); err != nil {
+			return fmt.Errorf("%w: %w", e, err)
+		}
+	}
+
+	if o.skip {
+		return nil
+	}
+
+	return e
+}
+
+func (o *options) printOutput(str string) error {
+	if o.out {
+		if _, err := fmt.Fprintln(o.output, str); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (o *options) isSearchedType(isDir bool) bool {
+	switch {
+	case o.fType == Folder:
+		return isDir
+	case o.fType == File:
+		return !isDir
+	default:
+		return true
+	}
+}
+
+func (o *options) match(ts Templates, fullPath string) bool {
+	if o.full {
+		return o.matchFunc(ts, o.caseFunc(fullPath))
+	}
+
+	return o.matchFunc(ts, o.caseFunc(path.Base(fullPath)))
 }
 
 // Deprecated: use [Only] instead.
@@ -97,30 +158,52 @@ func RelativePaths(o *options) { o.relative = true }
 // only if the base path was resolved.
 func WithErrorsSkip(o *options) { o.skip = true }
 
-// WithErrorsLog logs errors during find execution,
-// should be used with [WithErrorsSkip], for clear output.
+// WithErrorsLog logs errors during find execution.
+// Defaults to [os.Stdout] and can be changed with [WithLogger].
 func WithErrorsLog(o *options) { o.log = true }
 
-// WithOutput prints found paths as soon as they match.
-// Follows all the previous path related options,
-// such as names and relative paths.
-func WithOutput(o *options) { o.output = true }
+// WithOutput prints results as soon as they match given [Templates].
+// Defaults to [os.Stdout] and can be changed with [WithWriter].
+func WithOutput(o *options) { o.out = true }
+
+// WithWriter allows to set custom [io.Writer] for [WithPrint].
+// Also sets [WithOutput] to true.
+//
+// Note: write error counts as critical and will be returned
+// even if [WithErrorsSkip] was set.
+func WithWriter(out io.Writer) optFunc {
+	return func(o *options) {
+		o.output = out
+		o.out = true
+	}
+}
+
+// WithLogger allows to set custom logger for [WithErrorsLog].
+// Also sets [WithErrorsLog] to true.
+//
+// Note: write error counts as critical and will be returned
+// even if [WithErrorsSkip] was set.
+func WithLogger(l io.Writer) optFunc {
+	return func(o *options) {
+		o.logger = l
+		o.log = true
+	}
+}
+
+// WithMaxIterator allows to set custom output channel buffer.
+//
+// Note: can be used only with [FindWithIterator] or has no effect.
+func WithMaxIterator(max int) optFunc {
+	return func(o *options) {
+		o.maxIter = max
+	}
+}
 
 // Max set maximum ammount of searched objects. [Find] will stop as
 // soon as reach the limitation.
 func Max(i int) optFunc {
 	return func(o *options) {
 		o.max = i
-	}
-}
-
-// WithLogger allows to set custom logger for [WithErrorsLog].
-//
-// Note: write errors count as critical and will be returned
-// even if [WithErrorsSkip] was set.
-func WithLogger(l io.Writer) optFunc {
-	return func(o *options) {
-		o.logger = l
 	}
 }
 
@@ -149,29 +232,4 @@ func MatchAll(ts Templates, str string) bool {
 	}
 
 	return true
-}
-
-func (o *options) logError(e error) error {
-	if o.skip {
-		return nil
-	}
-
-	if o.log {
-		if _, err := o.logger.Write([]byte("error: " + e.Error() + "\n")); err != nil {
-			return fmt.Errorf("%w: %s", e, err)
-		}
-	}
-
-	return nil
-}
-
-func (o *options) isSearched(isDir bool) bool {
-	switch {
-	case o.fType == Folder:
-		return isDir
-	case o.fType == File:
-		return !isDir
-	default:
-		return true
-	}
 }
