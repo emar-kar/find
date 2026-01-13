@@ -1,12 +1,23 @@
 package find
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 )
 
-// String representation of the current system path separator.
-var pathSeparator = string(os.PathSeparator)
+var (
+	ErrTemplateType = errors.New("cannot define type of the template")
+
+	// String representation of the current system path separator.
+	pathSeparator = string(os.PathSeparator)
+)
+
+// Templater defines type constraint for generic Find function.
+type Templater interface {
+	~string | ~[]string
+}
 
 // Template is a parsed version of each Find filter.
 type Template struct {
@@ -66,7 +77,7 @@ func NewTemplate(str string) *Template {
 
 // parse parses string into the Template.
 func parse(str string) *Template {
-	t := &Template{}
+	t := new(Template)
 
 	t.not = strings.HasPrefix(str, "!")
 	str = strings.TrimPrefix(str, "!")
@@ -158,4 +169,25 @@ func NewTemplates(t []string) Templates {
 	}
 
 	return ts
+}
+
+func newTemplates[T Templater](t T, fn caseFunc) (Templates, error) {
+	var ts Templates
+
+	switch any(t).(type) {
+	case string:
+		ts = Templates{NewTemplate(fn(any(t).(string)))}
+	case []string:
+		sl := make([]string, 0, len(any(t).([]string)))
+
+		for _, str := range any(t).([]string) {
+			sl = append(sl, fn(str))
+		}
+
+		ts = NewTemplates(sl)
+	default:
+		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
+	}
+
+	return ts, nil
 }
