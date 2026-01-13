@@ -97,10 +97,10 @@ func (o *options) printOutput(str string) error {
 }
 
 func (o *options) isSearchedType(isDir bool) bool {
-	switch {
-	case o.fType == Folder:
+	switch o.fType {
+	case Folder:
 		return isDir
-	case o.fType == File:
+	case File:
 		return !isDir
 	default:
 		return true
@@ -200,7 +200,7 @@ func WithMaxIterator(max int) optFunc {
 }
 
 // Max set maximum ammount of searched objects. [Find] will stop as
-// soon as reach the limitation.
+// soon as reach the limit.
 func Max(i int) optFunc {
 	return func(o *options) {
 		o.max = i

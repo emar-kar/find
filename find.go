@@ -3,19 +3,10 @@ package find
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
-
-var ErrTemplateType = errors.New("cannot define type of the template")
-
-// Templater defines type constraint for generic Find function.
-type Templater interface {
-	~string | ~[]string
-}
 
 // FindWithIterator acts the same way as [Find] but returns channels instead.
 // String channel will return every match. Error channel returns first occured
@@ -30,6 +21,9 @@ type Templater interface {
 //	if err := <-errCh {
 //		// process error...
 //	}
+//
+// NOTE: output channel should be cosumed by the caller.
+// Overwise it can cause a deadlock.
 func FindWithIterator[T Templater](
 	ctx context.Context,
 	where string,
@@ -63,7 +57,7 @@ func FindWithIterator[T Templater](
 			return
 		}
 
-		if _, err := find(ctx, resPath, ts, opt); err != nil {
+		if err := find(ctx, resPath, ts, opt, nil); err != nil {
 			opt.errCh <- err
 		}
 	}()
@@ -97,7 +91,16 @@ func Find[T Templater](
 		return nil, err
 	}
 
-	return find(ctx, resPath, ts, opt)
+	var result []string
+	if opt.max > 0 {
+		result = make([]string, 0, opt.max)
+	} else {
+		result = make([]string, 0, 10)
+	}
+
+	err = find(ctx, resPath, ts, opt, &result)
+
+	return result, err
 }
 
 func find(
@@ -105,23 +108,20 @@ func find(
 	where string,
 	ts Templates,
 	opt *options,
-) ([]string, error) {
-	resPath, data, err := readAndResolve(where)
+	result *[]string,
+) error {
+	resPath, entries, err := readAndResolve(where)
 	if err != nil {
-		lErr := opt.logError(err)
-
-		return nil, lErr
+		return opt.logError(err)
 	}
 
-	res := make([]string, 0)
-
-	for _, f := range data {
+	for _, f := range entries {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return ctx.Err()
 		default:
 			if opt.max == 0 {
-				return res, nil
+				return nil
 			}
 
 			p := filepath.Join(resPath, f.Name())
@@ -139,13 +139,13 @@ func find(
 				}
 
 				if err := opt.printOutput(found); err != nil {
-					return nil, err
+					return opt.logError(err)
 				}
 
 				if opt.iter {
 					opt.iterCh <- found
 				} else {
-					res = append(res, found)
+					*result = append(*result, found)
 				}
 
 				if opt.max != -1 {
@@ -154,17 +154,14 @@ func find(
 			}
 
 			if opt.rec && f.IsDir() {
-				recData, err := find(ctx, p, ts, opt)
-				if err != nil {
-					return nil, err
+				if err := find(ctx, p, ts, opt, result); err != nil {
+					return err
 				}
-
-				res = append(res, recData...)
 			}
 		}
 	}
 
-	return res, nil
+	return nil
 }
 
 // resolvePath resolves symlinks and relative paths.
@@ -192,25 +189,4 @@ func readAndResolve(p string) (string, []os.DirEntry, error) {
 	data, err := os.ReadDir(resPath)
 
 	return resPath, data, err
-}
-
-func newTemplates[T Templater](t T, fn caseFunc) (Templates, error) {
-	var ts Templates
-
-	switch any(t).(type) {
-	case string:
-		ts = Templates{NewTemplate(fn(any(t).(string)))}
-	case []string:
-		sl := make([]string, 0, len(any(t).([]string)))
-
-		for _, str := range any(t).([]string) {
-			sl = append(sl, fn(str))
-		}
-
-		ts = NewTemplates(sl)
-	default:
-		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
-	}
-
-	return ts, nil
 }
