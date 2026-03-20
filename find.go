@@ -1,170 +1,75 @@
-// Package find allows to search for files/folders with options.
+// Package find searches for files and folders matching configurable patterns.
 package find
 
 import (
 	"context"
+	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// FindWithIterator acts the same way as [Find] but returns channels instead.
-// String channel will return every match. Error channel returns first occured
-// error during search or if [WithErrorsSkip] was set, first critical error.
-// As soon as search is over or interrupted, both channels will be closed.
-// For example:
+// FindSeq returns an iterator over all matches of pattern in where.
+// It can be used directly with range:
 //
-//	outCh, errCh := FindWithIterator(ctx, where, ts, opts...)
-//	for f := range outCh {
-//		// do something here...
-//	}
-//	if err := <-errCh {
-//		// process error...
+//	for path, err := range FindSeq(ctx, "/some/dir", "*.go") {
+//	    if err != nil {
+//	        // handle or break
+//	        continue
+//	    }
+//	    fmt.Println(path)
 //	}
 //
-// NOTE: output channel should be cosumed by the caller.
-// Overwise it can cause a deadlock.
-func FindWithIterator[T Templater](
-	ctx context.Context,
-	where string,
-	t T,
-	opts ...optFunc,
-) (chan string, chan error) {
-	opt := defaultOptionsWithCustom(opts...)
+// Setup errors (unresolvable path, malformed pattern) are yielded as
+// ("", err) on the first iteration. Mid-walk errors (e.g. permission
+// denied on a subdirectory) are yielded and traversal continues; use
+// break to stop early at any point.
+//
+// See [ParseTemplate] for the full pattern syntax.
+func FindSeq(
+	ctx context.Context, where, pattern string, opts ...Option,
+) iter.Seq2[string, error] {
+	opt := defaultOptions()
 
-	opt.iterCh = make(chan string, opt.maxIter)
-	opt.errCh = make(chan error, 1)
-	opt.iter = true
+	for _, fn := range opts {
+		fn(opt)
+	}
 
-	go func() {
-		defer func() {
-			close(opt.iterCh)
-			close(opt.errCh)
-		}()
+	return findSeqWithOpts(ctx, where, pattern, opt)
+}
 
-		resPath, err := resolvePath(where)
+// findSeqWithOpts is the internal implementation of [FindSeq] that accepts
+// a pre-built *options, allowing [Find] and [FindWithIterator] to share
+// the same options struct without double-instantiation.
+func findSeqWithOpts(
+	ctx context.Context, where, pattern string, opt *options,
+) iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		rp, err := resolvePath(where)
 		if err != nil {
-			opt.errCh <- err
+			yield("", err)
 			return
 		}
 
 		opt.orig = where
-		opt.resOrig = resPath
+		opt.resOrig = rp
 
-		ts, err := newTemplates(t, opt.caseFunc)
+		tmpl, err := ParseTemplate(opt.caseFunc(pattern))
 		if err != nil {
-			opt.errCh <- err
+			yield("", err)
 			return
 		}
 
-		if err := find(ctx, resPath, ts, opt, nil); err != nil {
-			opt.errCh <- err
-		}
-	}()
+		opt.tmpl = tmpl
 
-	return opt.iterCh, opt.errCh
+		findSeq(ctx, rp, opt, yield)
+	}
 }
 
-// Find searches for matches with the given templates in where.
-func Find[T Templater](
-	ctx context.Context,
-	where string,
-	t T,
-	opts ...optFunc,
-) ([]string, error) {
-	// Primary path resolution, even if `skip` flag was set,
-	// this error is critical and should not be omitted.
-	resPath, err := resolvePath(where)
-	if err != nil {
-		return nil, err
-	}
-
-	opt := defaultOptionsWithCustom(opts...)
-
-	// Pre-save location file and its resolved path, for further
-	// usage if relative paths will be needed.
-	opt.orig = where
-	opt.resOrig = resPath
-
-	ts, err := newTemplates(t, opt.caseFunc)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []string
-	if opt.max > 0 {
-		result = make([]string, 0, opt.max)
-	} else {
-		result = make([]string, 0, 10)
-	}
-
-	err = find(ctx, resPath, ts, opt, &result)
-
-	return result, err
-}
-
-func find(
-	ctx context.Context,
-	where string,
-	ts Templates,
-	opt *options,
-	result *[]string,
-) error {
-	resPath, entries, err := readAndResolve(where)
-	if err != nil {
-		return opt.logError(err)
-	}
-
-	for _, f := range entries {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			if opt.max == 0 {
-				return nil
-			}
-
-			p := filepath.Join(resPath, f.Name())
-
-			var found string
-
-			if opt.isSearchedType(f.IsDir()) && opt.match(ts, p) {
-				switch {
-				case opt.name:
-					found = f.Name()
-				case opt.relative:
-					found = strings.ReplaceAll(p, opt.resOrig, opt.orig)
-				default:
-					found = p
-				}
-
-				if err := opt.printOutput(found); err != nil {
-					return opt.logError(err)
-				}
-
-				if opt.iter {
-					opt.iterCh <- found
-				} else {
-					*result = append(*result, found)
-				}
-
-				if opt.max != -1 {
-					opt.max--
-				}
-			}
-
-			if opt.rec && f.IsDir() {
-				if err := find(ctx, p, ts, opt, result); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-// resolvePath resolves symlinks and relative paths.
+// resolvePath returns the absolute real path for p. It calls [os.Lstat] to
+// check for symlinks, resolves them via [filepath.EvalSymlinks] if present,
+// and converts the result to an absolute path.
 func resolvePath(p string) (string, error) {
 	info, err := os.Lstat(p)
 	if err != nil {
@@ -180,13 +85,265 @@ func resolvePath(p string) (string, error) {
 	return filepath.Abs(p)
 }
 
-func readAndResolve(p string) (string, []os.DirEntry, error) {
-	resPath, err := resolvePath(p)
+// findSeq reads rp and processes each entry, yielding matches via yield.
+// Returns false as soon as yield signals the caller wants to stop.
+func findSeq(
+	ctx context.Context,
+	rp string,
+	opt *options,
+	yield func(string, error) bool,
+) bool {
+	entries, err := os.ReadDir(rp)
 	if err != nil {
-		return "", nil, err
+		// Yield the error but keep walking the parent directory.
+		return yield("", err)
 	}
 
-	data, err := os.ReadDir(resPath)
+	for _, f := range entries {
+		select {
+		case <-ctx.Done():
+			yield("", ctx.Err())
+			return false
+		default:
+			if opt.max == 0 {
+				return false
+			}
 
-	return resPath, data, err
+			p := filepath.Join(rp, f.Name())
+
+			if !processEntrySeq(ctx, f, p, opt, yield) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// processEntrySeq handles a single directory entry for [FindSeq]: match,
+// yield, and optionally recurse. Returns false when yield signals stop.
+func processEntrySeq(
+	ctx context.Context,
+	f os.DirEntry,
+	p string,
+	opt *options,
+	yield func(string, error) bool,
+) bool {
+	isDir := f.IsDir()
+	isSymlink := f.Type()&os.ModeSymlink != 0
+
+	// Resolve symlinks only when explicitly requested via FollowSymlinks.
+	if isSymlink && opt.symlinks {
+		info, err := os.Stat(p)
+		if err != nil {
+			return yield("", err)
+		}
+
+		isDir = info.IsDir()
+	}
+
+	if opt.isSearchedType(isDir) && opt.match(p, f.Name()) {
+		found := formatFound(f, p, opt)
+
+		if err := opt.printOutput(found); err != nil {
+			return yield("", err)
+		}
+
+		if !yield(found, nil) {
+			return false
+		}
+
+		if opt.max != -1 {
+			opt.max--
+		}
+	}
+
+	// Do not recurse if max has already been reached.
+	if opt.rec && isDir && opt.max != 0 {
+		rp := p
+
+		if isSymlink && opt.symlinks {
+			// Resolve the symlink so findSeq receives an absolute real path.
+			var err error
+
+			rp, err = filepath.EvalSymlinks(p)
+			if err != nil {
+				return yield("", err)
+			}
+		}
+
+		return findSeq(ctx, rp, opt, yield)
+	}
+
+	return true
+}
+
+// formatFound returns the display form of path p according to opt flags.
+func formatFound(f os.DirEntry, p string, opt *options) string {
+	switch {
+	case opt.name:
+		return f.Name()
+	case opt.relative:
+		return strings.Replace(p, opt.resOrig, opt.orig, 1)
+	default:
+		return p
+	}
+}
+
+// FindWithIterator returns channel-based iteration over matches.
+// String channel yields every match. Error channel carries the first
+// occurred error or, if [SkipErrors] was set, the first critical error.
+// Both channels are closed once the search completes or is interrupted.
+//
+//	outCh, errCh := FindWithIterator(ctx, where, ts, opts...)
+//	for f := range outCh {
+//		// do something here...
+//	}
+//	if err := <-errCh {
+//		// process error...
+//	}
+//
+// NOTE: output channel must be consumed by the caller to avoid a deadlock.
+//
+// Deprecated: use [FindSeq] instead for pull-based iteration without
+// goroutines or channels.
+func FindWithIterator[T Templater](
+	ctx context.Context,
+	where string,
+	t T,
+	opts ...Option,
+) (chan string, chan error) {
+	opt := defaultOptions()
+
+	for _, fn := range opts {
+		fn(opt)
+	}
+
+	iterCh := make(chan string, opt.maxIter)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer func() {
+			close(iterCh)
+			close(errCh)
+		}()
+
+		resPath, err := resolvePath(where)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		opt.orig = where
+		opt.resOrig = resPath
+
+		var pattern string
+		switch v := any(t).(type) {
+		case string:
+			pattern = v
+		case []string:
+			pattern = ParsePattern(opt.strict, v...)
+		default:
+			errCh <- fmt.Errorf("%w: %v", ErrTemplateType, t)
+			return
+		}
+
+		tmpl, err := ParseTemplate(opt.caseFunc(pattern))
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		opt.tmpl = tmpl
+
+		if err := findOld(ctx, resPath, opt, iterCh, nil); err != nil {
+			errCh <- err
+		}
+	}()
+
+	return iterCh, errCh
+}
+
+// Find searches for matches with the given templates in where and returns
+// all results as a slice. Accepts a string or []string pattern (see
+// [Templater]). Use Find when you need the complete result set before
+// processing; use [FindSeq] when streaming or early termination is preferred.
+func Find(
+	ctx context.Context, where, pattern string, opts ...Option,
+) ([]string, error) {
+	result := make([]string, 0, 10)
+
+	for found, err := range FindSeq(ctx, where, pattern, opts...) {
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, found)
+	}
+
+	return result, nil
+}
+
+// findOld is the original recursive traversal used by [Find] and
+// [FindWithIterator]. When iterCh is non-nil, matches are sent to the
+// channel; otherwise they are appended to result.
+func findOld(
+	ctx context.Context,
+	where string,
+	opt *options,
+	iterCh chan<- string,
+	result *[]string,
+) error {
+	entries, err := os.ReadDir(where)
+	if err != nil {
+		return opt.logError(err)
+	}
+
+	for _, f := range entries {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if opt.max == 0 {
+				return nil
+			}
+
+			p := filepath.Join(where, f.Name())
+
+			if opt.isSearchedType(f.IsDir()) && opt.match(p, f.Name()) {
+				var found string
+
+				switch {
+				case opt.name:
+					found = f.Name()
+				case opt.relative:
+					found = strings.Replace(p, opt.resOrig, opt.orig, 1)
+				default:
+					found = p
+				}
+
+				if err := opt.printOutput(found); err != nil {
+					return opt.logError(err)
+				}
+
+				if iterCh != nil {
+					iterCh <- found
+				} else {
+					*result = append(*result, found)
+				}
+
+				if opt.max != -1 {
+					opt.max--
+				}
+			}
+
+			if opt.rec && f.IsDir() {
+				if err := findOld(ctx, p, opt, iterCh, result); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }

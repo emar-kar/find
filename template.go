@@ -8,160 +8,283 @@ import (
 )
 
 var (
-	ErrTemplateType = errors.New("cannot define type of the template")
-
-	// String representation of the current system path separator.
-	pathSeparator = string(os.PathSeparator)
+	ErrTemplateType     = errors.New("cannot define type of the template")
+	ErrMalformedPattern = errors.New("malformed pattern")
 )
 
-// Templater defines type constraint for generic Find function.
+// Templater defines the type constraint for [Find] and [FindWithIterator].
+// It will be deprecated in future versions; use [ParsePattern] to convert
+// a string or []string into a single pattern for [ParseTemplate].
 type Templater interface {
 	~string | ~[]string
 }
 
-// Template is a parsed version of each Find filter.
+// op identifies the kind of a Template node.
+type op int8
+
+const (
+	opLeaf op = iota // leaf: a base pattern with optional wildcards
+	opNot            // unary NOT: negates its left operand
+	opAnd            // binary AND: both left and right must match
+	opOr             // binary OR: either left or right must match
+)
+
+// Template is a parsed pattern tree used for matching paths.
 type Template struct {
-	and         *Template
-	or          *Template
+	op          op
+	left, right *Template
 	base        string
-	not         bool
 	strictLeft  bool
 	strictRight bool
 }
 
-// NewTemplate creates new Template from the given string.
+// NewTemplate creates a new [Template] from the given string without
+// validation. Malformed patterns (e.g. "a|", "|b") silently match nothing.
 //
-// String can contains:
-//
-//	*str*    - means that searched path should contain str
-//	str      - means that searched path should be str
-//	*str     - means that searched path should ends with str
-//	str*     - means that searched path should starts with str
-//	!*str*   - means that searched path should not contain str
-//	!str     - means that searched path should not be str
-//	!*str    - means that searched path should not end with str
-//	!str*    - means that searched path should not start with str
-//	str&str1 - means that searched path should be both str and str1
-//	str|str1 - means that searched path should be str or str1
-//
-// Option '&' defines nested paths e.g., '*str*&*str1*' - Find will search
-// for 'str' first and if it was found 'str1' inside it.
-//
-// Options '|' and '&' can contain as many elements as you need.
+// Deprecated: use [ParseTemplate] instead, which validates the pattern and
+// returns an error for malformed input.
 func NewTemplate(str string) *Template {
-	var t *Template
-
-	sep := strings.IndexFunc(str, func(r rune) bool {
-		if r == '&' || r == '|' {
-			return true
-		}
-
-		return false
-	})
-
-	if sep == -1 {
-		return parse(str)
-	}
-
-	switch str[sep] {
-	case '&':
-		t = parse(str[:sep])
-		t.and = NewTemplate(str[sep+1:])
-	case '|':
-		t = parse(str[:sep])
-		t.or = NewTemplate(str[sep+1:])
-	}
-
+	t, _ := buildTemplate(str)
 	return t
 }
 
-// parse parses string into the Template.
-func parse(str string) *Template {
-	t := new(Template)
+// findOuterSep returns the index of the first occurrence of sep at
+// parenthesis depth 0, or -1 if none is found.
+func findOuterSep(str string, sep byte) int {
+	depth := 0
 
-	t.not = strings.HasPrefix(str, "!")
-	str = strings.TrimPrefix(str, "!")
-
-	// If searched string is '*', then it will match
-	// any path it encounters. 'Not' will be ignored
-	// in this case.
-	if str == "*" {
-		t.strictLeft = false
-		t.strictRight = false
-		t.base = str
-
-		return t
+	for i := 0; i < len(str); i++ {
+		switch str[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case sep:
+			if depth == 0 {
+				return i
+			}
+		}
 	}
 
-	t.strictLeft = !strings.HasPrefix(str, "*")
-	str = strings.TrimPrefix(str, "*")
-	t.strictRight = !strings.HasSuffix(str, "*")
-	t.base = strings.TrimSuffix(str, "*")
+	return -1
+}
 
-	return t
+// isWrappedInParens reports whether str is entirely wrapped in a matching
+// pair of outer parentheses, e.g. "(a|b)" but not "(a)(b)".
+func isWrappedInParens(str string) bool {
+	if len(str) < 2 || str[0] != '(' || str[len(str)-1] != ')' {
+		return false
+	}
+
+	// Verify the opening '(' at position 0 is not closed before the last ')'.
+	depth := 0
+
+	for i := 0; i < len(str)-1; i++ {
+		switch str[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+
+		if depth == 0 {
+			return false // outer paren closed before end of string
+		}
+	}
+
+	return true
+}
+
+// buildTemplate parses str into a [Template], returning an error if any
+// segment is empty (malformed pattern). Splits on '|' first (lower
+// precedence), then delegates to [buildTemplateAnd] for '&'.
+func buildTemplate(str string) (*Template, error) {
+	if i := findOuterSep(str, '|'); i >= 0 {
+		left, err := buildTemplateAnd(str[:i])
+		if err != nil {
+			return left, err
+		}
+
+		right, err := buildTemplate(str[i+1:])
+		if err != nil {
+			return right, err
+		}
+
+		return &Template{op: opOr, left: left, right: right}, nil
+	}
+
+	return buildTemplateAnd(str)
+}
+
+// buildTemplateAnd handles '&' splitting (higher precedence than '|').
+func buildTemplateAnd(str string) (*Template, error) {
+	if i := findOuterSep(str, '&'); i >= 0 {
+		left, err := buildParse(str[:i])
+		if err != nil {
+			return left, err
+		}
+
+		right, err := buildTemplateAnd(str[i+1:])
+		if err != nil {
+			return right, err
+		}
+
+		return &Template{op: opAnd, left: left, right: right}, nil
+	}
+
+	return buildParse(str)
+}
+
+// buildParse handles a leading '!' and parenthesised groups before delegating
+// to [buildParseLiteral] for plain leaf patterns.
+func buildParse(str string) (*Template, error) {
+	not := false
+
+	if len(str) > 0 && str[0] == '!' {
+		not = true
+		str = str[1:]
+	}
+
+	if isWrappedInParens(str) {
+		inner, err := buildTemplate(str[1 : len(str)-1])
+		if err != nil {
+			return inner, err
+		}
+
+		if not {
+			return &Template{op: opNot, left: inner}, nil
+		}
+
+		return inner, nil
+	}
+
+	leaf, err := buildParseLiteral(str)
+	if err != nil {
+		return leaf, err
+	}
+
+	if not {
+		return &Template{op: opNot, left: leaf}, nil
+	}
+
+	return leaf, nil
+}
+
+// buildParseLiteral parses a single leaf pattern (wildcards and base string).
+// Returns [ErrMalformedPattern] if the resulting base is empty (empty segment).
+func buildParseLiteral(str string) (*Template, error) {
+	t := &Template{op: opLeaf}
+
+	// A lone '*' matches any path.
+	if str == "*" {
+		t.base = str
+		return t, nil
+	}
+
+	if len(str) > 0 && str[0] == '*' {
+		str = str[1:]
+	} else {
+		t.strictLeft = true
+	}
+
+	n := len(str)
+	if n > 0 && str[n-1] == '*' {
+		t.base = str[:n-1]
+	} else {
+		t.strictRight = true
+		t.base = str
+	}
+
+	// "**" (or similar) produces an empty base after stripping wildcards.
+	// Promote to the universal wildcard "*" so it matches everything.
+	if t.base == "" && (!t.strictLeft || !t.strictRight) {
+		t.base = "*"
+		t.strictLeft = false
+		t.strictRight = false
+	}
+
+	// Genuinely empty segment — e.g. from "a|" or "|b".
+	if t.base == "" {
+		return t, fmt.Errorf("%w: pattern contains an empty segment", ErrMalformedPattern)
+	}
+
+	return t, nil
 }
 
 // Match checks if given str matches the [Template].
 func (t *Template) Match(str string) bool {
-	var match bool
-
-	switch {
-	case t.base == "":
+	switch t.op {
+	case opLeaf:
+		return t.match(str)
+	case opNot:
+		return !t.left.Match(str)
+	case opAnd:
+		return t.left.Match(str) && t.right.Match(str)
+	case opOr:
+		return t.left.Match(str) || t.right.Match(str)
+	default:
 		return false
-	case t.base == "*":
-		match = true
-	case strings.Contains(str, t.base):
-		match = t.match(str)
-	case t.not:
-		match = true
 	}
-
-	if t.or != nil && !match {
-		match = t.or.Match(str)
-	}
-
-	if t.and != nil {
-		if !match {
-			return match
-		}
-
-		match = t.and.Match(str)
-	}
-
-	return match
 }
 
 func (t *Template) match(str string) bool {
-	match := true
-	sub := strings.Split(str, t.base)
-
-	left := len(sub) == 1 ||
-		sub[0] == "" ||
-		strings.HasSuffix(sub[0], pathSeparator)
-
-	right := len(sub) == 1 ||
-		sub[1] == "" ||
-		strings.HasPrefix(sub[1], pathSeparator)
-
-	switch {
-	case t.strictLeft && t.strictRight:
-		match = left && right
-	case t.strictLeft:
-		match = left
-	case t.strictRight:
-		match = right
+	switch t.base {
+	case "":
+		return false // genuinely empty segment — never matches
+	case "*":
+		return true // universal wildcard
 	}
 
-	if t.not {
-		match = !match
+	// Fast path: *base* pattern — any occurrence is valid, no boundary checks.
+	if !t.strictLeft && !t.strictRight {
+		return strings.Contains(str, t.base)
 	}
 
-	return match
+	// Strict path: loop until we find an occurrence that satisfies the
+	// required path-segment boundaries, or exhaust all occurrences.
+	baselen := len(t.base)
+	offset := 0
+	s := str
+
+	for {
+		idx := strings.Index(s, t.base)
+		if idx == -1 {
+			return false
+		}
+
+		realIdx := offset + idx
+		left := str[:realIdx]
+		right := str[realIdx+baselen:]
+
+		leftOK := left == "" || left[len(left)-1] == os.PathSeparator
+		rightOK := right == "" || right[0] == os.PathSeparator
+
+		var matchOK bool
+
+		switch {
+		case t.strictLeft && t.strictRight:
+			matchOK = leftOK && rightOK
+		case t.strictLeft:
+			matchOK = leftOK
+		default:
+			matchOK = rightOK
+		}
+
+		if matchOK {
+			return true
+		}
+
+		s = s[idx+baselen:]
+		offset += idx + baselen
+	}
 }
 
 type Templates []*Template
 
-// NewTemplates parses slice of strings into slice of Templates.
+// NewTemplates parses a slice of strings into a slice of [Template]s.
+//
+// Deprecated: use [ParseTemplate] instead, which validates each pattern and
+// returns an error for malformed input rather than silently matching nothing.
 func NewTemplates(t []string) Templates {
 	ts := make(Templates, 0, len(t))
 	for _, str := range t {
@@ -171,23 +294,101 @@ func NewTemplates(t []string) Templates {
 	return ts
 }
 
-func newTemplates[T Templater](t T, fn caseFunc) (Templates, error) {
-	var ts Templates
-
-	switch any(t).(type) {
-	case string:
-		ts = Templates{NewTemplate(fn(any(t).(string)))}
-	case []string:
-		sl := make([]string, 0, len(any(t).([]string)))
-
-		for _, str := range any(t).([]string) {
-			sl = append(sl, fn(str))
-		}
-
-		ts = NewTemplates(sl)
-	default:
-		return nil, fmt.Errorf("%w: %v", ErrTemplateType, t)
+// ParsePattern joins one or more pattern strings into a single combined
+// pattern suitable for [ParseTemplate].
+//
+//   - strict=false (default): patterns are OR-joined ("a|b|c"), so a path
+//     matching any of the given patterns is accepted.
+//   - strict=true: patterns are AND-joined ("(a)&(b)&(c)"), so a path must
+//     match every pattern. Each element is wrapped in parentheses to prevent
+//     precedence issues with patterns that already contain '|'.
+//
+// Returns "*" (match everything) if no templates are provided.
+func ParsePattern(strict bool, templates ...string) string {
+	if len(templates) == 0 {
+		return "*"
 	}
 
-	return ts, nil
+	builder := new(strings.Builder)
+	sep := '|'
+	if strict {
+		sep = '&'
+	}
+
+	for i, t := range templates {
+		if i > 0 {
+			builder.WriteRune(sep)
+		}
+
+		if strict {
+			builder.WriteByte('(')
+			builder.WriteString(t)
+			builder.WriteByte(')')
+		} else {
+			builder.WriteString(t)
+		}
+	}
+
+	return builder.String()
+}
+
+// checkBalancedParens returns [ErrMalformedPattern] if str contains
+// unbalanced or improperly nested parentheses.
+func checkBalancedParens(str string) error {
+	depth := 0
+
+	for i := 0; i < len(str); i++ {
+		switch str[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+
+			if depth < 0 {
+				return fmt.Errorf("%w: unmatched ')' in %q", ErrMalformedPattern, str)
+			}
+		}
+	}
+
+	if depth != 0 {
+		return fmt.Errorf("%w: unmatched '(' in %q", ErrMalformedPattern, str)
+	}
+
+	return nil
+}
+
+// ParseTemplate parses str into a [Template] and validates it.
+// Returns [ErrMalformedPattern] if the pattern contains an empty segment
+// (e.g. "a|", "|b", "a&" or an empty string) or unbalanced parentheses.
+//
+// Pattern syntax:
+//
+//	*str*    - path should contain str
+//	str      - path should equal str (at a path-segment boundary)
+//	*str     - path should end with str
+//	str*     - path should start with str
+//	!*str*   - path should not contain str
+//	!str     - path should not equal str
+//	!*str    - path should not end with str
+//	!str*    - path should not start with str
+//	str&str1 - both str and str1 must match (AND)
+//	str|str1 - either str or str1 must match (OR)
+//
+// '&' has higher precedence than '|', so *go*&!*test*|*mock* is parsed as
+// (*go* AND !*test*) OR *mock*, not *go* AND (!*test* OR *mock*).
+// Both operators can be chained with as many elements as needed.
+//
+// Parentheses can be used to override the default '&' > '|' precedence:
+//
+//	(str|str1)&str2 - (str OR str1) AND str2
+//	!(str&str1)     - NOT (str AND str1)
+//
+// The only all-wildcard pattern that matches everything is "*" (or "**",
+// which is normalised to "*").
+func ParseTemplate(str string) (*Template, error) {
+	if err := checkBalancedParens(str); err != nil {
+		return nil, err
+	}
+
+	return buildTemplate(str)
 }

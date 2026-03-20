@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"strings"
 )
 
@@ -15,65 +14,46 @@ const (
 	Both
 )
 
-var sensitive = func(s string) string { return s }
-
 type (
-	optFunc   func(*options)
-	matchFunc func(Templates, string) bool
-	caseFunc  func(string) string
+	// Option configures [Find], [FindWithIterator], and [FindSeq] behaviour.
+	Option func(*options)
 
-	// Type to create custom slices of find options.
-	Options []optFunc
+	caseFunc func(string) string
 )
 
-// options allows to configure Find behavior.
+// options configures the behaviour of [Find], [FindWithIterator], and [FindSeq].
 type options struct {
-	matchFunc matchFunc
-	caseFunc  caseFunc
-	logger    io.Writer
-	output    io.Writer
-	orig      string
-	resOrig   string
-	max       int
-	maxIter   int
-	fType     uint8
-	iterCh    chan string
-	errCh     chan error
-	rec       bool
-	name      bool
-	relative  bool
-	full      bool
-	skip      bool
-	log       bool
-	iter      bool
-	out       bool
+	caseFunc caseFunc
+	tmpl     *Template
+	logger   io.Writer
+	output   io.Writer
+	orig     string
+	resOrig  string
+	max      int
+	maxIter  int
+	fType    uint8
+	rec      bool
+	name     bool
+	relative bool
+	full     bool
+	skip     bool
+	strict   bool
+	symlinks bool
 }
 
-// defaultOptions default [Find] options.
+// defaultOptions returns default options.
 func defaultOptions() *options {
 	return &options{
-		matchFunc: MatchAny,
-		caseFunc:  sensitive,
-		logger:    os.Stdout,
-		output:    os.Stdout,
-		maxIter:   100,
-		max:       -1,
-		fType:     Both,
+		// Sensetive case by default.
+		caseFunc: func(s string) string { return s },
+		maxIter:  100,
+		max:      -1,
+		fType:    Both,
 	}
-}
-
-func defaultOptionsWithCustom(opts ...optFunc) *options {
-	opt := defaultOptions()
-
-	for _, fn := range opts {
-		fn(opt)
-	}
-
-	return opt
 }
 
 func (o *options) logError(e error) error {
-	if o.log {
+	if o.logger != nil {
 		if _, err := fmt.Fprintf(o.logger, "error: %s\n", e); err != nil {
 			return fmt.Errorf("%w: %w", e, err)
 		}
@@ -87,7 +67,7 @@ func (o *options) logError(e error) error {
 }
 
 func (o *options) printOutput(str string) error {
-	if o.out {
+	if o.output != nil {
 		if _, err := fmt.Fprintln(o.output, str); err != nil {
 			return err
 		}
@@ -107,112 +87,151 @@ func (o *options) isSearchedType(isDir bool) bool {
 	}
 }
 
-func (o *options) match(ts Templates, fullPath string) bool {
-	if o.full {
-		return o.matchFunc(ts, o.caseFunc(fullPath))
+// match checks whether the entry at fullPath/name matches the template.
+// When [MatchFullPath] is set, the full path is matched; otherwise only the
+// entry name is used.
+func (o *options) match(fullPath, name string) bool {
+	if o.tmpl == nil {
+		return false
 	}
 
-	return o.matchFunc(ts, o.caseFunc(path.Base(fullPath)))
+	if o.full {
+		return o.tmpl.Match(o.caseFunc(fullPath))
+	}
+
+	return o.tmpl.Match(o.caseFunc(name))
 }
 
 // Deprecated: use [Only] instead.
-func SearchFor(t uint8) optFunc { return Only(t) }
+func SearchFor(t uint8) Option { return Only(t) }
 
 // Only defines if result should contains files, folders or both.
-func Only(t uint8) optFunc {
+func Only(t uint8) Option {
 	return func(o *options) {
 		o.fType = t
 	}
 }
 
-// Deprecated: use [Recursively] instead.
-func SearchRecursively(o *options) { Recursively(o) }
+// Deprecated: use [Recursive] instead.
+func Recursively(o *options) { Recursive(o) }
 
-// Recursively defines recursive search.
-func Recursively(o *options) { o.rec = true }
+// Recursive enables recursive directory search.
+func Recursive(o *options) { o.rec = true }
 
-// Deprecated: use [Name] instead.
-func SearchName(o *options) { Name(o) }
+// FollowSymlinks resolves symlinks during traversal.
+// When enabled, symlinks pointing to directories are recursed into
+// (requires [Recursive]) and reported as folders when [Only](Folder)
+// is set. Disabled by default to avoid unexpected behaviour with
+// circular symlinks.
+func FollowSymlinks(o *options) { o.symlinks = true }
 
-// Name defines if only names of files/folders should be
-// in the output.
-func Name(o *options) { o.name = true }
+// Deprecated: use [NamesOnly] instead.
+func Name(o *options) { NamesOnly(o) }
 
-// Deprecated: use [Strict] instead.
-func SearchStrict(o *options) { Strict(o) }
+// NamesOnly restricts the output to entry names only, omitting the path.
+func NamesOnly(o *options) { o.name = true }
 
-// Strict requires all templates to match searched path.
-func Strict(o *options) { o.matchFunc = MatchAll }
+// Strict changes the behaviour of [FindWithIterator] when a
+// []string pattern is given: instead of joining the patterns with OR
+// (any must match), they are joined with AND (all must match).
+// Has no effect on [Find] and [FindSeq], which accept a single string pattern.
+func Strict(o *options) { o.strict = true }
 
-// MatchFullPath matches full path not just the name.
+// MatchFullPath matches the full path instead of just the entry name.
 func MatchFullPath(o *options) { o.full = true }
 
 // RelativePaths does not resolve paths in the output.
 //
-// Note: does not work with [Name] option.
+// Note: does not work with [NamesOnly] option.
 func RelativePaths(o *options) { o.relative = true }
 
-// WithErrorsSkip skips errors during find execution.
+// Deprecated: use [SkipErrors] instead.
+func WithErrorsSkip(o *options) { SkipErrors(o) }
+
+// SkipErrors silently ignores non-critical errors during search.
+// Has no effect on [FindSeq], which always yields errors to the caller.
 //
-// Note: if the flag was set, [Find] will return nil error,
-// only if the base path was resolved.
-func WithErrorsSkip(o *options) { o.skip = true }
+// Note: if set, [Find] returns nil even when errors occur, as long
+// as the root path was resolved.
+func SkipErrors(o *options) { o.skip = true }
 
-// WithErrorsLog logs errors during find execution.
-// Defaults to [os.Stdout] and can be changed with [WithLogger].
-func WithErrorsLog(o *options) { o.log = true }
+// Deprecated: use [LogErrors] instead.
+func WithErrorsLog(o *options) { LogErrors(o) }
 
-// WithOutput prints results as soon as they match given [Templates].
-// Defaults to [os.Stdout] and can be changed with [WithWriter].
-func WithOutput(o *options) { o.out = true }
+// LogErrors logs errors to stderr (or the writer set by [WithLogger])
+// during search. Defaults to [os.Stderr].
+//
+// Deprecated: use [FindSeq] and handle errors directly in the iteration loop.
+func LogErrors(o *options) { o.logger = os.Stderr }
 
-// WithWriter allows to set custom [io.Writer] for [WithPrint].
-// Also sets [WithOutput] to true.
+// WithOutput prints results to [os.Stdout] as soon as they match.
+// Use [WithWriter] to set a custom writer.
+//
+// Deprecated: use [FindSeq] and write matches directly in the iteration loop.
+func WithOutput(o *options) { o.output = os.Stdout }
+
+// WithWriter sets a custom [io.Writer] for output. Also enables output.
+// Ignores nil writers.
 //
 // Note: write error counts as critical and will be returned
-// even if [WithErrorsSkip] was set.
-func WithWriter(out io.Writer) optFunc {
+// even if [SkipErrors] was set.
+//
+// Deprecated: use [FindSeq] and write matches directly in the iteration loop.
+func WithWriter(out io.Writer) Option {
 	return func(o *options) {
-		o.output = out
-		o.out = true
+		if out != nil {
+			o.output = out
+		}
 	}
 }
 
-// WithLogger allows to set custom logger for [WithErrorsLog].
-// Also sets [WithErrorsLog] to true.
+// WithLogger sets a custom [io.Writer] for error logging. Also enables
+// logging. Ignores nil writers.
 //
 // Note: write error counts as critical and will be returned
-// even if [WithErrorsSkip] was set.
-func WithLogger(l io.Writer) optFunc {
-	return func(o *options) {
-		o.logger = l
-		o.log = true
-	}
-}
-
-// WithMaxIterator allows to set custom output channel buffer.
+// even if [SkipErrors] was set.
 //
-// Note: can be used only with [FindWithIterator] or has no effect.
-func WithMaxIterator(max int) optFunc {
+// Deprecated: use [FindSeq] and handle errors directly in the iteration loop.
+func WithLogger(l io.Writer) Option {
 	return func(o *options) {
-		o.maxIter = max
+		if l != nil {
+			o.logger = l
+		}
 	}
 }
 
-// Max set maximum ammount of searched objects. [Find] will stop as
-// soon as reach the limit.
-func Max(i int) optFunc {
+// WithMaxIterator sets the buffer size of the output channel.
+// Values <= 0 are ignored; the default buffer size is 100.
+//
+// Deprecated: use [FindSeq] instead, which does not use channels.
+func WithMaxIterator(n int) Option {
 	return func(o *options) {
-		o.max = i
+		if n > 0 {
+			o.maxIter = n
+		}
 	}
 }
 
-// Insensitive sets case insensitive search.
-func Insensitive(o *options) {
+// Max sets the maximum number of results returned.
+// Traversal stops as soon as it reaches the limit.
+// Values <= 0 are ignored; the default behaviour is unlimited (-1).
+func Max(i int) Option {
+	return func(o *options) {
+		if i > 0 {
+			o.max = i
+		}
+	}
+}
+
+// Deprecated: use [CaseInsensitive] instead.
+func Insensitive(o *options) { CaseInsensitive(o) }
+
+// CaseInsensitive enables case-insensitive pattern matching.
+func CaseInsensitive(o *options) {
 	o.caseFunc = strings.ToLower
 }
 
-// MatchAny returns true if any of the given templates match the string.
+// MatchAny returns true if any of the given templates match str.
 func MatchAny(ts Templates, str string) bool {
 	for _, t := range ts {
 		if t.Match(str) {
@@ -223,7 +242,7 @@ func MatchAny(ts Templates, str string) bool {
 	return false
 }
 
-// MatchAll returns true if all of the given templates match the string.
+// MatchAll returns true if all of the given templates match str.
 func MatchAll(ts Templates, str string) bool {
 	for _, t := range ts {
 		if !t.Match(str) {
