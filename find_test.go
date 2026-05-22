@@ -335,6 +335,25 @@ func TestFindSeqMalformedPattern(t *testing.T) {
 	}
 }
 
+func TestFindSeqEmptyPattern(t *testing.T) {
+	var (
+		result string
+		gotErr error
+	)
+	for s, err := range FindSeq(context.Background(), ".", "") {
+		result = s
+		gotErr = err
+	}
+
+	if gotErr != nil {
+		t.Fatal("got error for empty pattern")
+	}
+
+	if result != "" {
+		t.Fatalf("got result %q for empty pattern", result)
+	}
+}
+
 func TestFindSeqNonExistentDir(t *testing.T) {
 	var gotErr error
 	for _, err := range FindSeq(context.Background(), "/no/such/dir", "*.go") {

@@ -24,12 +24,18 @@ import (
 // Setup errors (unresolvable path, malformed pattern) are yielded as
 // ("", err) on the first iteration. Mid-walk errors (e.g. permission
 // denied on a subdirectory) are yielded and traversal continues; use
-// break to stop early at any point.
+// break to stop early at any point. Empty pattern breaks loop immediately.
 //
 // See [ParseTemplate] for the full pattern syntax.
 func FindSeq(
 	ctx context.Context, where, pattern string, opts ...Option,
 ) iter.Seq2[string, error] {
+	if pattern == "" {
+		return func(yield func(string, error) bool) {
+			yield("", nil)
+		}
+	}
+
 	opt := defaultOptions()
 
 	for _, fn := range opts {
