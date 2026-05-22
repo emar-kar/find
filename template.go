@@ -304,7 +304,10 @@ func NewTemplates(t []string) Templates {
 //     precedence issues with patterns that already contain '|'.
 //
 // Returns "*" (match everything) if no templates are provided.
+// This function removes empty templates, before processing.
 func ParsePattern(strict bool, templates ...string) string {
+	templates = removeEmpty(templates)
+
 	if len(templates) == 0 {
 		return "*"
 	}
@@ -330,6 +333,33 @@ func ParsePattern(strict bool, templates ...string) string {
 	}
 
 	return builder.String()
+}
+
+// removeEmpty removes empty strings from sl.
+func removeEmpty(sl []string) []string {
+	i := -1
+
+	for j, s := range sl {
+		if s == "" {
+			i = j
+			break
+		}
+	}
+
+	if i == -1 {
+		return sl
+	}
+
+	for j := i + 1; j < len(sl); j++ {
+		if v := sl[j]; v != "" {
+			sl[i] = v
+			i++
+		}
+	}
+
+	clear(sl[i:])
+
+	return sl[:i]
 }
 
 // checkBalancedParens returns [ErrMalformedPattern] if str contains

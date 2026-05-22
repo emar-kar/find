@@ -420,7 +420,7 @@ func TestFindRecursive(t *testing.T) {
 func TestFindSlicePattern(t *testing.T) {
 	root := testTree(t)
 
-	pattern := ParsePattern(false, "*.go", "*.md")
+	pattern := ParsePattern(false, "", "*.go", "*.md", "")
 	got, err := Find(context.Background(), root, pattern)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +436,7 @@ func TestFindSlicePatternStrict(t *testing.T) {
 	root := testTree(t)
 
 	// Strict AND: must match *.go AND *file* — so file.go and file_test.go match.
-	pattern := ParsePattern(true, "*.go", "*file*")
+	pattern := ParsePattern(true, "", "*.go", "*file*", "")
 	got, err := Find(context.Background(), root, pattern)
 	if err != nil {
 		t.Fatal(err)
