@@ -12,21 +12,18 @@ var (
 	ErrMalformedPattern = errors.New("malformed pattern")
 )
 
-// Templater defines the type constraint for [Find] and [FindWithIterator].
-// It will be deprecated in future versions; use [ParsePattern] to convert
-// a string or []string into a single pattern for [ParseTemplate].
-type Templater interface {
-	~string | ~[]string
-}
-
 // op identifies the kind of a Template node.
 type op int8
 
 const (
-	opLeaf op = iota // leaf: a base pattern with optional wildcards
-	opNot            // unary NOT: negates its left operand
-	opAnd            // binary AND: both left and right must match
-	opOr             // binary OR: either left or right must match
+	// A base pattern with optional wildcards.
+	opLeaf op = iota
+	// NOT: negates its left operand.
+	opNot
+	// AND: both left and right must match.
+	opAnd
+	// OR: either left or right must match.
+	opOr
 )
 
 // Template is a parsed pattern tree used for matching paths.
@@ -36,16 +33,6 @@ type Template struct {
 	base        string
 	strictLeft  bool
 	strictRight bool
-}
-
-// NewTemplate creates a new [Template] from the given string without
-// validation. Malformed patterns (e.g. "a|", "|b") silently match nothing.
-//
-// Deprecated: use [ParseTemplate] instead, which validates the pattern and
-// returns an error for malformed input.
-func NewTemplate(str string) *Template {
-	t, _ := buildTemplate(str)
-	return t
 }
 
 // findOuterSep returns the index of the first occurrence of sep at
@@ -88,7 +75,7 @@ func isWrappedInParens(str string) bool {
 		}
 
 		if depth == 0 {
-			return false // outer paren closed before end of string
+			return false // Outer paren closed before end of string.
 		}
 	}
 
@@ -230,9 +217,9 @@ func (t *Template) Match(str string) bool {
 func (t *Template) match(str string) bool {
 	switch t.base {
 	case "":
-		return false // genuinely empty segment — never matches
+		return false // Empty segment — never matches.
 	case "*":
-		return true // universal wildcard
+		return true // Universal wildcard - always matches.
 	}
 
 	// Fast path: *base* pattern — any occurrence is valid, no boundary checks.
@@ -281,17 +268,34 @@ func (t *Template) match(str string) bool {
 
 type Templates []*Template
 
-// NewTemplates parses a slice of strings into a slice of [Template]s.
+// MatchAny returns true if any of the given templates match str.
 //
-// Deprecated: use [ParseTemplate] instead, which validates each pattern and
-// returns an error for malformed input rather than silently matching nothing.
-func NewTemplates(t []string) Templates {
-	ts := make(Templates, 0, len(t))
-	for _, str := range t {
-		ts = append(ts, NewTemplate(str))
+// Deprecated: usage of this functions is discouraged in favor of
+// constructing one [Template] from string or []string and use Match
+// on it.
+func MatchAny(ts Templates, str string) bool {
+	for _, t := range ts {
+		if t.Match(str) {
+			return true
+		}
 	}
 
-	return ts
+	return false
+}
+
+// MatchAll returns true if all of the given templates match str.
+//
+// Deprecated: usage of this functions is discouraged in favor of
+// constructing one [Template] from string or []string and use Match
+// on it.
+func MatchAll(ts Templates, str string) bool {
+	for _, t := range ts {
+		if !t.Match(str) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // ParsePattern joins one or more pattern strings into a single combined
@@ -333,6 +337,15 @@ func ParsePattern(strict bool, templates ...string) string {
 	}
 
 	return builder.String()
+}
+
+// CreateTemplate combines parsing pattern and creating [Template].
+// Since pattern parsing is a save operation, which guarantees correct
+// output string, it must not return any error from template creation
+// and thus can be safe to call as is.
+func CreateTemplate(strict bool, sl ...string) *Template {
+	t, _ := ParseTemplate(ParsePattern(strict, sl...))
+	return t
 }
 
 // removeEmpty removes empty strings from sl.

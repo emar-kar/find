@@ -475,74 +475,6 @@ func TestFindSkipErrors(t *testing.T) {
 	}
 }
 
-// --- FindWithIterator tests ---
-
-func TestFindWithIterator(t *testing.T) {
-	root := testTree(t)
-
-	outCh, errCh := FindWithIterator(context.Background(), root, "*.go")
-
-	var got []string
-	for p := range outCh {
-		got = append(got, p)
-	}
-
-	if err := <-errCh; err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"file.go", "file_test.go"}
-	if g := names(got); !slices.Equal(g, want) {
-		t.Errorf("FindWithIterator names = %v, want %v", g, want)
-	}
-}
-
-func TestFindWithIteratorRecursive(t *testing.T) {
-	root := testTree(t)
-
-	outCh, errCh := FindWithIterator(context.Background(), root, "*.go", Recursive)
-
-	var got []string
-	for p := range outCh {
-		got = append(got, p)
-	}
-
-	if err := <-errCh; err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"deep.go", "file.go", "file_test.go", "nested.go", "nested_test.go"}
-	if g := names(got); !slices.Equal(g, want) {
-		t.Errorf("FindWithIterator recursive names = %v, want %v", g, want)
-	}
-}
-
-// --- MatchAny / MatchAll tests ---
-
-func TestMatchAny(t *testing.T) {
-	ts := NewTemplates([]string{"*.go", "*.md"})
-
-	if !MatchAny(ts, "file.go") {
-		t.Error("MatchAny should match file.go")
-	}
-
-	if MatchAny(ts, "file.txt") {
-		t.Error("MatchAny should not match file.txt")
-	}
-}
-
-func TestMatchAll(t *testing.T) {
-	ts := NewTemplates([]string{"*file*", "*.go"})
-
-	if !MatchAll(ts, "file.go") {
-		t.Error("MatchAll should match file.go")
-	}
-
-	if MatchAll(ts, "README.md") {
-		t.Error("MatchAll should not match README.md")
-	}
-}
-
 // benchTree creates a temporary directory tree with the given breadth and
 // depth, placing one .go file and one .txt file in each directory.
 // Returns the root path and total number of .go files created.
@@ -605,29 +537,6 @@ func BenchmarkFind_Flat(b *testing.B) {
 	}
 }
 
-func BenchmarkFindWithIterator_Flat(b *testing.B) {
-	root := b.TempDir()
-	for i := range 50 {
-		name := "file" + string(rune('A'+i%26)) + string(rune('a'+i/26)) + ".go"
-		if err := os.WriteFile(filepath.Join(root, name), nil, 0o644); err != nil {
-			b.Fatal(err)
-		}
-	}
-
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for range b.N {
-		outCh, errCh := FindWithIterator(ctx, root, "*.go")
-		for range outCh {
-		}
-
-		if err := <-errCh; err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkFindSeq_Flat(b *testing.B) {
 	root := b.TempDir()
 	for i := range 50 {
@@ -664,22 +573,6 @@ func BenchmarkFind_Recursive(b *testing.B) {
 	}
 }
 
-func BenchmarkFindWithIterator_Recursive(b *testing.B) {
-	root, _ := benchTree(b, 3, 3)
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for range b.N {
-		outCh, errCh := FindWithIterator(ctx, root, "*.go", Recursive)
-		for range outCh {
-		}
-
-		if err := <-errCh; err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkFindSeq_Recursive(b *testing.B) {
 	root, _ := benchTree(b, 3, 3)
 	ctx := context.Background()
@@ -704,22 +597,6 @@ func BenchmarkFind_ComplexPattern(b *testing.B) {
 	for range b.N {
 		_, err := Find(ctx, root, "*go*&!*test*", Recursive)
 		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkFindWithIterator_ComplexPattern(b *testing.B) {
-	root, _ := benchTree(b, 3, 3)
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for range b.N {
-		outCh, errCh := FindWithIterator(ctx, root, "*go*&!*test*", Recursive)
-		for range outCh {
-		}
-
-		if err := <-errCh; err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -754,22 +631,6 @@ func BenchmarkFind_EarlyTermination(b *testing.B) {
 	}
 }
 
-func BenchmarkFindWithIterator_EarlyTermination(b *testing.B) {
-	root, _ := benchTree(b, 3, 4)
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for range b.N {
-		outCh, errCh := FindWithIterator(ctx, root, "*.go", Recursive, Max(1))
-		for range outCh {
-		}
-
-		if err := <-errCh; err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 func BenchmarkFindSeq_EarlyTermination(b *testing.B) {
 	root, _ := benchTree(b, 3, 4)
 	ctx := context.Background()
@@ -791,24 +652,12 @@ func BenchmarkFindSeq_EarlyTermination(b *testing.B) {
 
 // --- Template construction benchmarks ---
 
-func BenchmarkNewTemplate_Simple(b *testing.B) {
-	for range b.N {
-		NewTemplate("*.go")
-	}
-}
-
 func BenchmarkParseTemplate_Simple(b *testing.B) {
 	for range b.N {
 		_, err := ParseTemplate("*.go")
 		if err != nil {
 			b.Fatal(err)
 		}
-	}
-}
-
-func BenchmarkNewTemplate_Complex(b *testing.B) {
-	for range b.N {
-		NewTemplate("(*go*|*.md)&!*test*&!*vendor*")
 	}
 }
 
@@ -821,27 +670,12 @@ func BenchmarkParseTemplate_Complex(b *testing.B) {
 	}
 }
 
-func BenchmarkNewTemplate_Parens(b *testing.B) {
-	for range b.N {
-		NewTemplate("((*go*|*.md)&!*test*)|(*.txt&!*log*)")
-	}
-}
-
 func BenchmarkParseTemplate_Parens(b *testing.B) {
 	for range b.N {
 		_, err := ParseTemplate("((*go*|*.md)&!*test*)|(*.txt&!*log*)")
 		if err != nil {
 			b.Fatal(err)
 		}
-	}
-}
-
-func BenchmarkNewTemplates(b *testing.B) {
-	patterns := []string{"*.go", "*.md", "*test*", "!*vendor*"}
-
-	b.ResetTimer()
-	for range b.N {
-		NewTemplates(patterns)
 	}
 }
 

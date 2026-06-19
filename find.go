@@ -3,7 +3,6 @@ package find
 
 import (
 	"context"
-	"fmt"
 	"iter"
 	"os"
 	"path/filepath"
@@ -46,8 +45,8 @@ func FindSeq(
 }
 
 // findSeqWithOpts is the internal implementation of [FindSeq] that accepts
-// a pre-built *options, allowing [Find] and [FindWithIterator] to share
-// the same options struct without double-instantiation.
+// a pre-built *options, allowing [Find] to share the same options struct
+// without double-instantiation.
 func findSeqWithOpts(
 	ctx context.Context, where, pattern string, opt *options,
 ) iter.Seq2[string, error] {
@@ -151,10 +150,6 @@ func processEntrySeq(
 	if opt.isSearchedType(isDir) && opt.match(p, f.Name()) {
 		found := formatFound(f, p, opt)
 
-		if err := opt.printOutput(found); err != nil {
-			return yield("", err)
-		}
-
 		if !yield(found, nil) {
 			return false
 		}
@@ -196,84 +191,7 @@ func formatFound(f os.DirEntry, p string, opt *options) string {
 	}
 }
 
-// FindWithIterator returns channel-based iteration over matches.
-// String channel yields every match. Error channel carries the first
-// occurred error or, if [SkipErrors] was set, the first critical error.
-// Both channels are closed once the search completes or is interrupted.
-//
-//	outCh, errCh := FindWithIterator(ctx, where, ts, opts...)
-//	for f := range outCh {
-//		// do something here...
-//	}
-//	if err := <-errCh {
-//		// process error...
-//	}
-//
-// NOTE: output channel must be consumed by the caller to avoid a deadlock.
-//
-// Deprecated: use [FindSeq] instead for pull-based iteration without
-// goroutines or channels.
-func FindWithIterator[T Templater](
-	ctx context.Context,
-	where string,
-	t T,
-	opts ...Option,
-) (chan string, chan error) {
-	opt := defaultOptions()
-
-	for _, fn := range opts {
-		fn(opt)
-	}
-
-	iterCh := make(chan string, opt.maxIter)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer func() {
-			close(iterCh)
-			close(errCh)
-		}()
-
-		resPath, err := resolvePath(where)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		opt.orig = where
-		opt.resOrig = resPath
-
-		var pattern string
-		switch v := any(t).(type) {
-		case string:
-			pattern = v
-		case []string:
-			pattern = ParsePattern(opt.strict, v...)
-		default:
-			errCh <- fmt.Errorf("%w: %v", ErrTemplateType, t)
-			return
-		}
-
-		tmpl, err := ParseTemplate(opt.caseFunc(pattern))
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		opt.tmpl = tmpl
-
-		if err := findOld(ctx, resPath, opt, iterCh, nil); err != nil {
-			errCh <- err
-		}
-	}()
-
-	return iterCh, errCh
-}
-
-// Find searches for matches with the given templates in where and returns
-// all results as a slice. Accepts a string or []string pattern (see
-// [Templater]). Use Find when you need the complete result set before
-// processing; use [FindSeq] when streaming or early termination is preferred.
+// Find collects matches into a slice before return.
 func Find(
 	ctx context.Context, where, pattern string, opts ...Option,
 ) ([]string, error) {
@@ -288,68 +206,4 @@ func Find(
 	}
 
 	return result, nil
-}
-
-// findOld is the original recursive traversal used by [Find] and
-// [FindWithIterator]. When iterCh is non-nil, matches are sent to the
-// channel; otherwise they are appended to result.
-func findOld(
-	ctx context.Context,
-	where string,
-	opt *options,
-	iterCh chan<- string,
-	result *[]string,
-) error {
-	entries, err := os.ReadDir(where)
-	if err != nil {
-		return opt.logError(err)
-	}
-
-	for _, f := range entries {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			if opt.max == 0 {
-				return nil
-			}
-
-			p := filepath.Join(where, f.Name())
-
-			if opt.isSearchedType(f.IsDir()) && opt.match(p, f.Name()) {
-				var found string
-
-				switch {
-				case opt.name:
-					found = f.Name()
-				case opt.relative:
-					found = strings.Replace(p, opt.resOrig, opt.orig, 1)
-				default:
-					found = p
-				}
-
-				if err := opt.printOutput(found); err != nil {
-					return opt.logError(err)
-				}
-
-				if iterCh != nil {
-					iterCh <- found
-				} else {
-					*result = append(*result, found)
-				}
-
-				if opt.max != -1 {
-					opt.max--
-				}
-			}
-
-			if opt.rec && f.IsDir() {
-				if err := findOld(ctx, p, opt, iterCh, result); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	return nil
 }
