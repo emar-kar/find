@@ -71,20 +71,12 @@ iteration. Use `break` to stop early.
 ### Find
 
 ```go
-func Find[T Templater](ctx context.Context, where string, t T, opts ...Option) ([]string, error)
+func Find(ctx context.Context, where string, pattern string, opts ...Option) ([]string, error)
 ```
 
-Collects all matches into a slice and returns them. Kept for backward
+Finds all matches into a slice and returns them. Kept for backward
 compatibility — prefer `FindSeq` for streaming results without allocating a
 result slice. Accepts `string` or `[]string` patterns.
-
-### FindWithIterator *(deprecated)*
-
-```go
-func FindWithIterator[T Templater](ctx context.Context, where string, t T, opts ...Option) (chan string, chan error)
-```
-
-Channel-based iteration. **Deprecated** — use `FindSeq` instead.
 
 ### ParseTemplate
 
@@ -104,29 +96,15 @@ option slices with `[]find.Option{...}`.
 
 | Option            | Description                                            |
 |-------------------|--------------------------------------------------------|
-| `Recursive`       | Search subdirectories recursively.                     |
 | `Only(t)`         | Filter by type: `File`, `Folder`, or `Both` (default). |
-| `NamesOnly`       | Return entry names only, not full paths.               |
-| `RelativePaths`   | Keep paths relative to *where*.                        |
-| `MatchFullPath`   | Match against the full path, not just the entry name.  |
-| `CaseInsensitive` | Case-insensitive pattern matching.                     |
+| `Recursive`       | Search subdirectories recursively.                     |
 | `FollowSymlinks`  | Resolve and follow symlinks during traversal.          |
-| `Max(n)`          | Limit the number of results.                           |
-| `Strict`          | AND-join `[]string` patterns instead of OR-join.       |
+| `NamesOnly`       | Return entry names only, not full paths.               |
+| `MatchFullPath`   | Match against the full path, not just the entry name.  |
+| `RelativePaths`   | Keep paths relative to *where*.                        |
 | `SkipErrors`      | Silently ignore non-critical errors (`Find` only).     |
-
-### Deprecated options
-
-These remain for `Find`/`FindWithIterator` compatibility. With `FindSeq`,
-handle output and errors directly in the loop.
-
-| Option             | Replacement                              |
-|--------------------|------------------------------------------|
-| `LogErrors`        | Handle errors in the `FindSeq` loop.     |
-| `WithOutput`       | Print matches in the `FindSeq` loop.     |
-| `WithWriter(w)`    | Write matches in the `FindSeq` loop.     |
-| `WithLogger(w)`    | Log errors in the `FindSeq` loop.        |
-| `WithMaxIterator(n)` | Not needed — `FindSeq` has no channel. |
+| `Max(n)`          | Limit the number of results.                           |
+| `CaseInsensitive` | Case-insensitive pattern matching.                     |
 
 ## Usage examples
 
